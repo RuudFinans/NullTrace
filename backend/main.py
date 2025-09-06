@@ -66,6 +66,11 @@ app.mount(
 templates = Jinja2Templates(directory=ROOT_DIR / "frontend" / "templates")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Enkle helsesjekker
+
+@app.head("/", include_in_schema=False)
+async def root_head():
+    return Response(status_code=200)
 
 # Anbefalt: egen health-endpoint Render kan pinge
 @app.get("/healthz", include_in_schema=False)
