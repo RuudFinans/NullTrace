@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "nulltrace"
+version = "0.1.0"
+description = "Post‑quantum + Signal‑style messaging playground"
+authors = ["Ruben <you@example.com>"]
+packages = [{ include = "backend" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.115"
+uvicorn = {extras = ["standard"], version = "^0.34"}
+pydantic = "^2.11"
+PyNaCl = "^1.5"
+oqs = "^0.10"               # Kyber via liboqs python‑bindings
+DoubleRatchet = "^1.1"
+typing-extensions = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+pytest-asyncio = "^0.26"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
