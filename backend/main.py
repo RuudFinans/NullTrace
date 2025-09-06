@@ -67,9 +67,22 @@ templates = Jinja2Templates(directory=ROOT_DIR / "frontend" / "templates")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enkle helsesjekker
-@app.get("/healthz")
-def healthz():
+@app.get("/", include_in_schema=False)
+async def root():
     return {"ok": True}
+
+@app.head("/", include_in_schema=False)
+async def root_head():
+    return Response(status_code=200)
+
+# Anbefalt: egen health-endpoint Render kan pinge
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    return {"status": "ok"}
+
+@app.head("/healthz", include_in_schema=False)
+async def healthz_head():
+    return Response(status_code=200)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Rom-tokens (kortlevd, én-gangs) for å hindre gjette/ubudne joins
