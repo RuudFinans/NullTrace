@@ -62,6 +62,7 @@ let CID=genUUID();
 let localKeys, grp, ws=null;
 let role=null;
 let capsuleInfo=null;
+let nextCid = null; // ← NEW: pre-generert ID som vises i confirm og brukes ved join
 
 // Host-side rekey throttle
 let lastRekeyAt = 0;
@@ -159,7 +160,7 @@ function wipeSession(){
 
   peers.clear(); pendingRequests.clear(); usedHues.clear();
   grp=null; greeted=false; role=null; capsuleInfo=null;
-  localKeys=null; CID=genUUID();
+  localKeys=null; // ← keep CID as-is; ID bestemmes eksplisitt ved ny start/join
 
   CH.innerHTML=""; pendingList.innerHTML="";
   document.querySelectorAll("#userList .user-entry").forEach(n=>n.remove());
@@ -168,7 +169,7 @@ function wipeSession(){
   S.disabled = true;
   IN.disabled = true;
   disconnectBtn.disabled = true;
-  deadmanToggle.disabled = true;
+  // deadman kan alltid toggles (ikke disable her)
 
   Ibtn.disabled = true;
   ST.textContent="";
@@ -285,6 +286,7 @@ J.onclick=()=>{
     if(!confirm("Leave the current chat and start new?")) return;
     wipeSession();
   }
+  CID = genUUID(); // ← NEW: host får ny ID hver gang
   R.value=genUUID().slice(0,12);
   role="init";
   startChat();
@@ -327,7 +329,8 @@ POK.onclick=async ()=>{
   capsuleInfo=obj;
   CONF_ROOM.textContent=obj.room;
   CONF_HOSTFP.textContent=obj.cid.slice(0,6);
-  CONF_GUESTFP.textContent=CID.slice(0,6);
+  nextCid = genUUID(); // ← NEW: pre-generer ID som vises og faktisk brukes etter join
+  CONF_GUESTFP.textContent = nextCid.slice(0,6);
   CONFIRMDLG.showModal();
 };
 // NEW: no inline onclick in HTML; bind here instead
@@ -339,9 +342,13 @@ CONF_CANCEL.onclick=()=>CONFIRMDLG.close();
 CONF_JOIN.onclick=async ()=>{
   const info=capsuleInfo;
   CONFIRMDLG.close();
+
+  // Lås ID-en som ble vist i dialogen, før ev. wipe
+  if (nextCid) { CID = nextCid; nextCid = null; }
+  else { CID = genUUID(); }
+
   if(ws) wipeSession();
 
-  CID=genUUID();
   localKeys=await createLocalKeys();
   role="resp";
   R.value=info.room;
@@ -358,9 +365,9 @@ CONF_JOIN.onclick=async ()=>{
 };
 
 disconnectBtn.onclick=wipeSession;
+// deadman kan alltid toggles; ingen krav om aktiv grp
 deadmanToggle.addEventListener("change", ()=>{
-  if(!grp||!grp.groupKey) return;
-  deadmanToggle.checked?enableDeadman():disableDeadman();
+  deadmanToggle.checked ? enableDeadman() : disableDeadman();
 });
 
 /* GK retry (gjest) */

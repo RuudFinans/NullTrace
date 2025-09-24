@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NullTrace • Quantum-Ready E2EE Chat</title>
-  <meta name="description" content="NullTrace — quantum-ready, RAM-only group chat with hybrid X25519 + ML-KEM, deterministic AEAD, chaff traffic shaping, and zero telemetry.">
+  <title>NullTrace • Quantum-ready E2EE Chat</title>
+  <meta name="description" content="NullTrace — quantum-ready, RAM-only group chat with hybrid X25519 + ML-KEM, deterministic AEAD, traffic shaping, and zero telemetry.">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#0d0f14">
   <link rel="icon" href="{{ url_for('static', path='logo.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
 
-  <!-- Import map (local vendor bundles). Nonce matches CSP from backend. -->
+  <!-- Import map (nonce matches CSP from backend) -->
   <script type="importmap" nonce="{{ request.state.csp_nonce }}">
   {
     "imports": {
@@ -28,15 +28,15 @@
   <main class="container">
 
     <!-- TOP BAR -->
-    <header class="topbar">
+    <header class="topbar" role="banner">
       <div class="brand">
-        <img src="{{ url_for('static', path='logo.png') }}" class="logo" alt="NullTrace logo" decoding="async">
+        <img src="{{ url_for('static', path='logo.png') }}" class="logo" alt="NullTrace" decoding="async">
         <div class="brand-copy">
           <h1 class="app-title">NullTrace</h1>
-          <p class="app-sub">Quantum-ready • RAM-only • Zero telemetry</p>
+          <p class="app-sub">Quantum-ready · RAM-only · Zero telemetry</p>
         </div>
       </div>
-      <div class="status-badges">
+      <div class="status-badges" aria-label="Status">
         <span class="badge">E2EE</span>
         <span class="badge">PQ-Hybrid</span>
         <span class="badge">No Logs</span>
@@ -45,24 +45,31 @@
     </header>
 
     <!-- HERO -->
-    <section class="hero">
+    <section class="hero" aria-labelledby="hero-title">
       <div class="hero-card">
-        <h2>Private rooms. Disposable identities.</h2>
-        <p class="muted">Spin up a secure channel, invite with a one-time capsule, and let messages auto-burn.</p>
+        <h2 id="hero-title">Private rooms. Disposable identities.</h2>
+        <p class="muted">Start a secure channel, invite with a one-time capsule, let messages auto-burn.</p>
 
         <div class="quick-actions">
-          <input id="room" class="room-input" inputmode="latin" autocomplete="off" spellcheck="false" placeholder="Secure Channel">
+          <label for="room" class="visually-hidden">Secure Channel</label>
+          <input
+            id="room"
+            class="room-input"
+            inputmode="latin"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Secure Channel">
           <div class="actions">
-            <button id="join" class="btn primary">Start</button>
-            <button id="capsuleBtn" class="btn">Join</button>
-            <button id="inviteBtn" class="btn ghost" disabled>Invite</button>
+            <button id="join" class="btn primary" type="button">Start</button>
+            <button id="capsuleBtn" class="btn" type="button">Join</button>
+            <button id="inviteBtn" class="btn ghost" type="button" disabled>Invite</button>
           </div>
         </div>
 
-        <ul class="hero-points">
-          <li>🔐 Post-quantum hybrid keying</li>
-          <li>🕵️ Traffic shaping with chaff & padding</li>
-          <li>🧨 Burn timer • ⚰️ Deadman • One-click wipe</li>
+        <ul class="hero-points" aria-label="Highlights">
+          <li>Post-quantum hybrid keying</li>
+          <li>Traffic shaping with chaff &amp; padding</li>
+          <li>Burn timer · Deadman · One-tap wipe</li>
         </ul>
       </div>
     </section>
@@ -74,7 +81,7 @@
     </section>
 
     <!-- MAIN GRID: CHAT + PARTICIPANTS -->
-    <section class="grid" aria-label="Chat">
+    <section class="grid" aria-label="Chat area">
       <div class="chat-shell">
         <ul id="messages" class="chat" aria-live="polite" aria-relevant="additions"></ul>
       </div>
@@ -82,22 +89,29 @@
       <aside class="roster" aria-labelledby="roster-title">
         <div class="roster-head">
           <h3 id="roster-title">Participants</h3>
-          <p class="muted small">Approve newcomers • verify fingerprints</p>
+          <p class="muted small">Approve newcomers · verify fingerprints</p>
         </div>
-        <div id="userList" class="user-list"></div>
+        <div id="userList" class="user-list" role="list"></div>
       </aside>
     </section>
 
     <!-- BOTTOM BAR -->
     <section class="bottom-bar" aria-label="Compose">
       <div class="compose">
-        <input id="input" class="compose-input" placeholder="Type your secure message…" disabled autocomplete="off" spellcheck="false">
-        <button id="send" class="btn primary" disabled>Send</button>
+        <label for="input" class="visually-hidden">Message</label>
+        <input
+          id="input"
+          class="compose-input"
+          placeholder="Type your secure message…"
+          disabled
+          autocomplete="off"
+          spellcheck="false">
+        <button id="send" class="btn primary" type="button" disabled>Send</button>
       </div>
       <div class="controls">
-        <button id="disconnectBtn" class="btn danger" disabled title="Wipe session">Wipe</button>
-        <label class="deadman-label" title="Hide tab &gt;2 s to wipe">
-          <input type="checkbox" id="deadmanToggle" disabled>
+        <button id="disconnectBtn" class="btn danger" type="button" disabled title="Wipe session">Wipe</button>
+        <label class="deadman-label" for="deadmanToggle" title="Hide tab &gt; 2 s to wipe">
+          <input type="checkbox" id="deadmanToggle">
           Deadman
         </label>
       </div>
@@ -105,69 +119,69 @@
 
     <!-- SECURITY ENGINE -->
     <section class="features" aria-labelledby="engine-title">
-      <h2 id="engine-title">🧬 Security Engine</h2>
+      <h2 id="engine-title">Security Engine</h2>
 
       <div class="feature-grid">
         <div class="feature">
-          <h4>🔐 PQ-Hybrid from day one</h4>
+          <h4>PQ-Hybrid from day one</h4>
           <p>X25519 + ML-KEM-512 for long-term secrecy and post-quantum resilience.</p>
         </div>
 
         <div class="feature">
-          <h4>🆔 Identity-bound pairing</h4>
-          <p>Signed handshake transcript + short SAS check to kill invisible MITM.</p>
+          <h4>Identity-bound pairing</h4>
+          <p>Signed handshake transcript + short SAS check to block invisible MITM.</p>
         </div>
 
         <div class="feature">
-          <h4>🧱 Replay-proof AEAD</h4>
+          <h4>Replay-proof AEAD</h4>
           <p>XChaCha20-Poly1305 with per-sender sequence &amp; epochs. Strict AAD binds sender/seq/epoch.</p>
         </div>
 
         <div class="feature">
-          <h4>🔄 Smart rekey</h4>
-          <p>Initiator-driven rekey on join/leave (debounced). Per-peer sealed GK distribution.</p>
+          <h4>Smart rekey</h4>
+          <p>Initiator-driven on join/leave. Per-peer sealed GK distribution.</p>
         </div>
 
         <div class="feature">
-          <h4>🎫 Access capsules</h4>
+          <h4>Access capsules</h4>
           <p>NT-C1 invites: signed, TTL-locked, size-padded. One-time room tokens at the WS edge.</p>
         </div>
 
         <div class="feature">
-          <h4>🕵️ Traffic shaping</h4>
-          <p>Uniform 3–5 KB frames; encrypted chaff runs constantly; server sinks noise.</p>
+          <h4>Traffic shaping</h4>
+          <p>Uniform 3–5 KB frames; encrypted chaff; server sinks noise.</p>
         </div>
 
         <div class="feature">
-          <h4>🛡️ Soft rate limits</h4>
-          <p>Per-class quotas (chat / control / bulk). No rage-disconnects; just gentle back-pressure.</p>
+          <h4>Soft rate limits</h4>
+          <p>Per-class quotas (chat / control / bulk). Back-pressure without drops.</p>
         </div>
 
         <div class="feature">
-          <h4>🧠 RAM-only</h4>
-          <p>No persistence, no telemetry. Hardened headers &amp; CSP by default.</p>
+          <h4>RAM-only</h4>
+          <p>No persistence. No telemetry. Hardened headers &amp; strict CSP.</p>
         </div>
 
         <div class="feature">
-          <h4>🧨 Safety UX</h4>
-          <p>Pending approvals, SAS verify, burn timer, deadman switch, one-tap wipe.</p>
+          <h4>Safety UX</h4>
+          <p>Approvals, SAS verify, burn timer, deadman switch, one-tap wipe.</p>
         </div>
       </div>
     </section>
 
     <!-- HOW IT WORKS -->
     <section class="features" aria-labelledby="how-title">
-      <h2 id="how-title">⚙️ How it works</h2>
+      <h2 id="how-title">How it works</h2>
 
       <ol class="how-list">
         <li><strong>Host starts a room.</strong> Fresh keys; disposable room ID.</li>
         <li><strong>Share an invite capsule.</strong> Signed NT-C1, TTL-bound, size-padded (no token inside).</li>
         <li><strong>Guest pastes &amp; confirms.</strong> Room + short SAS fingerprints for a quick human check.</li>
         <li><strong>Hybrid handshake.</strong> X25519 + ML-KEM derive a shared secret; initiator signs the transcript.</li>
-        <li><strong>Host approves.</strong> Sends one-shot <code>ct</code>; rekeys and distributes sealed GK to members.</li>
+        <li><strong>Host approves.</strong> Sends one-shot <code>ct</code>; rekeys and distributes sealed GK.</li>
         <li><strong>Chat.</strong> AEAD with deterministic nonces; AAD over <code>{type,cid,seq,epoch}</code>.</li>
-        <li><strong>Membership changes = new keys.</strong> Debounced rekey; guests can <code>gk_req</code> to resync.</li>
-        <li><strong>Traffic gets blended.</strong> Frames are padded; encrypted chaff runs; server sinks the noise.</li>
+        <li><strong>Membership change → new keys.</strong> Debounced rekey; guests can <code>gk_req</code> to resync.</li>
+        <li><strong>Traffic blended.</strong> Frames padded; encrypted chaff runs; server sinks noise.</li>
         <li><strong>Clean exit.</strong> Burn timer, deadman, wipe. Nothing at rest.</li>
       </ol>
     </section>
@@ -180,7 +194,7 @@
     <p class="muted small">Expires in <span id="inviteTimer">02:00</span></p>
     <textarea id="inviteTxt" readonly class="mono" rows="5"></textarea>
     <div class="dlg-buttons">
-      <button id="inviteCloseBtn" class="btn">Close</button>
+      <button id="inviteCloseBtn" class="btn" type="button">Close</button>
     </div>
   </dialog>
 
@@ -189,22 +203,22 @@
     <h3 id="paste-title">Paste capsule</h3>
     <textarea id="pasteTxt" class="mono" rows="5" placeholder="Paste NT-C1 capsule here…"></textarea>
     <div class="dlg-buttons">
-      <button id="pasteOk" class="btn primary">OK</button>
-      <button id="pasteCancelBtn" class="btn" onclick="this.closest('dialog').close()">Cancel</button>
+      <button id="pasteOk" class="btn primary" type="button">OK</button>
+      <button id="pasteCancelBtn" class="btn" type="button" onclick="this.closest('dialog').close()">Cancel</button>
     </div>
   </dialog>
 
   <!-- CONFIRM JOIN DIALOG -->
   <dialog id="confirmDlg" class="dlg" aria-labelledby="confirm-title">
     <h3 id="confirm-title">Confirm Join</h3>
-    <div class="confirm-grid">
+    <div class="confirm-grid" role="group" aria-label="Confirmation">
       <p>Room: <strong><span id="confirmRoom"></span></strong></p>
       <p>Host ID: <code id="confirmHostFP"></code></p>
       <p>Your ID: <code id="confirmGuestFP"></code></p>
     </div>
     <div class="dlg-buttons">
-      <button id="confirmJoinBtn" class="btn primary">Join</button>
-      <button id="confirmCancelBtn" class="btn">Cancel</button>
+      <button id="confirmJoinBtn" class="btn primary" type="button">Join</button>
+      <button id="confirmCancelBtn" class="btn" type="button">Cancel</button>
     </div>
   </dialog>
 
