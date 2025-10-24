@@ -131,6 +131,23 @@ code, kbd {
   margin: 0 auto;
   padding: 20px clamp(16px, 4vw, 28px);
 }
+/* Blur og “freeze” bakgrunn når access-dialogen er åpen */
+main.blurred {
+  filter: blur(6px) saturate(90%);
+  transition: filter .16s ease;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Sentrer alle åpne <dialog> modal vinduer */
+dialog[open] {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0; /* overstyr UA-Defaults */
+}
+
 
 /* 5) Topbar */
 .topbar {
@@ -219,6 +236,22 @@ input[type="search"] {
 .room-input:focus,
 .compose-input:focus,
 input:focus {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+  box-shadow: var(--ring);
+  background: color-mix(in oklab, var(--panel-2) 85%, transparent);
+}
+/* Inputs (legg dette sammen med de andre input-reglene) */
+input[type="password"] {
+  width: 100%;
+  background: var(--panel-2);
+  color: var(--txt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: .6rem .8rem;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s, background-color .15s;
+}
+input[type="password"]:focus {
   border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
   box-shadow: var(--ring);
   background: color-mix(in oklab, var(--panel-2) 85%, transparent);

@@ -1,11 +1,14 @@
 # backend/main.py
 from pathlib import Path
-from typing import Dict, Set, Tuple
+from typing import Dict, Set, Tuple, Optional
 import logging
 import secrets
 import time
 import re
 import json
+import os
+import hmac
+import hashlib
 from collections import defaultdict
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -15,6 +18,15 @@ from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketState
 from pydantic import BaseModel
 from uuid import uuid4
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Load .env tidlig (fra prosjektroten: ../.env relativt til denne fila)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=(Path(__file__).resolve().parent.parent / ".env"))
+except Exception:
+    # Ikke fatal – miljø kan komme fra prosess/host
+    pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -67,12 +79,10 @@ templates = Jinja2Templates(directory=ROOT_DIR / "frontend" / "templates")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enkle helsesjekker
-
 @app.head("/", include_in_schema=False)
 async def root_head():
     return Response(status_code=200)
 
-# Anbefalt: egen health-endpoint Render kan pinge
 @app.get("/healthz", include_in_schema=False)
 async def healthz():
     return {"status": "ok"}
@@ -82,10 +92,110 @@ async def healthz_head():
     return Response(status_code=200)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Access-code gate (BETA)
+# - Klienten må sende gyldig X-Access-Code på /api/room-token
+# - Koder defineres i env NT_ACCESS_CODES = "code1,code2,..."
+# - Robusthet: konstant-tid-sammenligning, IP-rate-limit og anti-bruteforce-ban
+
+# Definer minimumslengde FØR bruk
+ACCESS_MIN_LEN = 20
+
+# Les koder og salt fra env
+ACCESS_CODES = {
+    c.strip() for c in os.getenv("NT_ACCESS_CODES", "").split(",") if c.strip()
+}
+ACCESS_SALT = os.getenv("NT_ACCESS_SALT") or secrets.token_urlsafe(32)
+
+# Logg og filtrer for korte koder
+if not ACCESS_CODES:
+    log.warning("No access codes loaded from NT_ACCESS_CODES. Server is fail-closed and will return 401.")
+else:
+    too_short = [c for c in ACCESS_CODES if len(c) < ACCESS_MIN_LEN]
+    if too_short:
+        log.error(
+            "Ignoring %d access code(s) shorter than %d characters.",
+            len(too_short), ACCESS_MIN_LEN
+        )
+        ACCESS_CODES = {c for c in ACCESS_CODES if len(c) >= ACCESS_MIN_LEN}
+    log.info("Access codes loaded: %d", len(ACCESS_CODES))
+
+# Rate limit for token-kall pr. IP
+TOKEN_REQ_LIMIT = 60
+TOKEN_REQ_WINDOW = 60  # sekunder
+
+# Anti-bruteforce (feil kode) pr. IP
+ACCESS_FAIL_LIMIT = 10
+ACCESS_FAIL_WINDOW = 600  # 10 min
+
+# Midlertidig ban ved misbruk (HTTP-siden; separat fra WS-ban)
+BAN_SECONDS = 300  # 5 min
+
+token_req_times: Dict[str, list] = defaultdict(list)   # ip -> [ts,...]
+access_fail_times: Dict[str, list] = defaultdict(list) # ip -> [ts,...]
+banned_ips_http: Dict[str, float] = {}                 # ip -> ban_until_ts
+
+def _client_ip_from_request(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host or "0.0.0.0"
+
+def _ct_eq(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+def _normalize_code(raw: Optional[str]) -> str:
+    return (raw or "").strip()
+
+def _code_id(code: str) -> str:
+    # Anonym ID for logging/telemetri (ikke reversibel uten SALT)
+    return hmac.new(ACCESS_SALT.encode(), code.encode(), hashlib.sha256).hexdigest()[:16]
+
+def _verify_access_code(raw: str) -> bool:
+    if not ACCESS_CODES:
+        # Hvis ingen koder er satt i env, steng helt (fail-closed)
+        return False
+    code = _normalize_code(raw)
+    if len(code) < ACCESS_MIN_LEN:
+        return False
+    # Sjekk mot whitelist med konstant-tid-sammenligning
+    ok = False
+    for allowed in ACCESS_CODES:
+        ok = ok or _ct_eq(code, allowed)  # behold flat timing
+    return ok
+
+def _prune_and_check(timestamps: list, limit: int, window: int) -> bool:
+    now = time.time()
+    while timestamps and timestamps[0] < now - window:
+        timestamps.pop(0)
+    if len(timestamps) >= limit:
+        return False
+    timestamps.append(now)
+    return True
+
+def _is_http_banned(ip: str) -> bool:
+    now = time.time()
+    until = banned_ips_http.get(ip)
+    if until and until > now:
+        return True
+    if until and until <= now:
+        banned_ips_http.pop(ip, None)
+    return False
+
+def _track_token_req(ip: str) -> bool:
+    return _prune_and_check(token_req_times[ip], TOKEN_REQ_LIMIT, TOKEN_REQ_WINDOW)
+
+def _track_access_failure(ip: str) -> bool:
+    ok = _prune_and_check(access_fail_times[ip], ACCESS_FAIL_LIMIT, ACCESS_FAIL_WINDOW)
+    return ok  # ok == fortsatt under grense
+
+def _ban_http(ip: str, seconds: int = BAN_SECONDS) -> None:
+    banned_ips_http[ip] = time.time() + seconds
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Rom-tokens (kortlevd, én-gangs) for å hindre gjette/ubudne joins
 TOKEN_TTL_SECONDS = 120  # 2 minutter
-# room_id -> { token:str -> exp_ts:float }
-_room_tokens: Dict[str, Dict[str, float]] = {}
+# room_id -> { token:str -> (exp_ts:float, access_code_fingerprint:str) }
+_room_tokens: Dict[str, Dict[str, Tuple[float, str]]] = {}
 
 ROOM_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 
@@ -93,10 +203,10 @@ def _validate_room_id(room_id: str) -> None:
     if not ROOM_ID_RE.match(room_id):
         raise HTTPException(status_code=400, detail="Invalid room id")
 
-def _issue_room_token(room_id: str) -> Tuple[str, float]:
+def _issue_room_token(room_id: str, access_fingerprint: str) -> Tuple[str, float]:
     tok = secrets.token_urlsafe(32)
     exp = time.time() + TOKEN_TTL_SECONDS
-    _room_tokens.setdefault(room_id, {})[tok] = exp
+    _room_tokens.setdefault(room_id, {})[tok] = (exp, access_fingerprint)
     return tok, exp
 
 def _verify_room_token(room_id: str, token: str, consume: bool = True) -> bool:
@@ -104,10 +214,18 @@ def _verify_room_token(room_id: str, token: str, consume: bool = True) -> bool:
     now = time.time()
     if not tokens:
         return False
-    exp = tokens.get(token)
-    if not exp or exp <= now:
-        # rydde ut utløpte
-        for t, e in list(tokens.items()):
+    entry = tokens.get(token)
+    if not entry:
+        # rydde utløpte for hygiene (uten å signalisere noe)
+        for t, (e, _) in list(tokens.items()):
+            if e <= now:
+                tokens.pop(t, None)
+        return False
+    exp, _fp = entry
+    if exp <= now:
+        tokens.pop(token, None)
+        # rydde resten som er utløpt
+        for t, (e, _) in list(tokens.items()):
             if e <= now:
                 tokens.pop(t, None)
         return False
@@ -126,14 +244,43 @@ class TokenResp(BaseModel):
 @app.post("/api/room-token", response_model=TokenResp)
 async def api_room_token(req: TokenReq, request: Request):
     _validate_room_id(req.room_id)
-    token, exp = _issue_room_token(req.room_id)
-    # Origin-sjekk for enkel CSRF-reduksjon
+
+    client_ip = _client_ip_from_request(request)
+    if _is_http_banned(client_ip):
+        # samme respons som invalid auth for å ikke lekke ban-status
+        log.debug("[ACCESS] HTTP banned IP tried token request: %s", client_ip)
+        raise HTTPException(status_code=401, detail="Access code required")
+
+    # Per-IP rate-limit for token requests (uansett om koden er riktig/feil)
+    if not _track_token_req(client_ip):
+        _ban_http(client_ip, BAN_SECONDS)
+        log.warning("[RL] Token request rate exceeded; banned %s for %ss", client_ip, BAN_SECONDS)
+        raise HTTPException(status_code=429, detail="Too many requests")
+
+    # Origin-sjekk (CSRF)
     origin = request.headers.get("origin", "")
     base_scheme = "https" if request.url.scheme == "https" else "http"
     expected1 = f"{base_scheme}://{request.url.hostname}"
     expected2 = f"{expected1}:{request.url.port}" if request.url.port else expected1
     if origin and origin not in (expected1, expected2):
         log.warning("Suspicious token request origin=%s expected=%s|%s", origin, expected1, expected2)
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Access-code kreves
+    access_code = request.headers.get("x-access-code", "")
+    if not _verify_access_code(access_code):
+        # Track feil og ban ved gjentatte forsøk
+        if not _track_access_failure(client_ip):
+            _ban_http(client_ip, BAN_SECONDS)
+            log.warning("[ACCESS] Too many invalid access codes from %s; banned %ss", client_ip, BAN_SECONDS)
+        # Logg med anonym fingerprint (ikke selve koden)
+        anon = _code_id(_normalize_code(access_code)) if access_code else "∅"
+        log.debug("[ACCESS] Invalid access code (id=%s) from %s", anon, client_ip)
+        raise HTTPException(status_code=401, detail="Access code required")
+
+    # Gyldig kode → utsted kortlevd, én-gangs room token
+    anon_fp = _code_id(_normalize_code(access_code))
+    token, exp = _issue_room_token(req.room_id, anon_fp)
     return TokenResp(token=token, exp=int(exp))
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,7 +335,7 @@ BULK_WINDOW_SECONDS = 60
 
 CONNECT_LIMIT = 30
 CONNECT_WINDOW_SECONDS = 60
-BAN_SECONDS = 60
+WS_BAN_SECONDS = 60  # egen WS-ban
 
 MAX_MESSAGE_BYTES = 16384    # romsligere pga padding (3–5 KB hos oss)
 
@@ -196,7 +343,7 @@ client_times_chat = defaultdict(list)   # ip -> [ts,...]
 client_times_ctrl = defaultdict(list)
 client_times_bulk = defaultdict(list)   # beholdt for ev. observasjon
 client_connect_times = defaultdict(list)
-banned_ips: Dict[str, float] = {}       # ip -> ban_until_ts
+banned_ips: Dict[str, float] = {}       # ip -> ban_until_ts (WS)
 
 def _client_ip_from_ws(ws: WebSocket) -> str:
     xff = ws.headers.get("x-forwarded-for")
@@ -204,7 +351,7 @@ def _client_ip_from_ws(ws: WebSocket) -> str:
         return xff.split(",")[0].strip()
     return ws.client.host or "0.0.0.0"
 
-def _prune_and_check(timestamps: list, limit: int, window: int) -> bool:
+def _prune_and_check_ws(timestamps: list, limit: int, window: int) -> bool:
     now = time.time()
     while timestamps and timestamps[0] < now - window:
         timestamps.pop(0)
@@ -219,16 +366,16 @@ def is_banned(client_ip: str) -> bool:
     if ban_until and ban_until > now:
         return True
     if ban_until and ban_until <= now:
-        log.debug("[SECURITY] Ban expired for %s", client_ip)
+        log.debug("[SECURITY] WS ban expired for %s", client_ip)
         banned_ips.pop(client_ip, None)
     return False
 
 def is_connect_limited(client_ip: str) -> bool:
     ts = client_connect_times[client_ip]
-    ok = _prune_and_check(ts, CONNECT_LIMIT, CONNECT_WINDOW_SECONDS)
+    ok = _prune_and_check_ws(ts, CONNECT_LIMIT, CONNECT_WINDOW_SECONDS)
     if not ok:
-        banned_ips[client_ip] = time.time() + BAN_SECONDS
-        log.debug("[SECURITY] Connect limit exceeded. Banned %s for %s seconds.", client_ip, BAN_SECONDS)
+        banned_ips[client_ip] = time.time() + WS_BAN_SECONDS
+        log.debug("[SECURITY] Connect limit exceeded. WS-banned %s for %s seconds.", client_ip, WS_BAN_SECONDS)
     return not ok
 
 def _classify_message_kind(msg_text: str) -> str:
@@ -253,9 +400,9 @@ def is_rate_limited_message(client_ip: str, msg_text: str) -> bool:
         # Chaff/ping teller ikke mot rate limit
         return False
     if kind == "ctrl":
-        return not _prune_and_check(client_times_ctrl[client_ip], CTRL_LIMIT, CTRL_WINDOW_SECONDS)
+        return not _prune_and_check_ws(client_times_ctrl[client_ip], CTRL_LIMIT, CTRL_WINDOW_SECONDS)
     # chat (t='m')
-    return not _prune_and_check(client_times_chat[client_ip], CHAT_LIMIT, CHAT_WINDOW_SECONDS)
+    return not _prune_and_check_ws(client_times_chat[client_ip], CHAT_LIMIT, CHAT_WINDOW_SECONDS)
 
 def _is_bulk(msg_text: str) -> bool:
     try:
@@ -270,9 +417,15 @@ def _is_bulk(msg_text: str) -> bool:
 async def websocket_endpoint(ws: WebSocket, room_id: str):
     client_ip = _client_ip_from_ws(ws)
 
-    # Ban/abuse
+    # Hvis IP er HTTP-bannet pga bruteforce, nekt også WS (samme prinsipp)
+    if _is_http_banned(client_ip):
+        log.debug("[SECURITY] WS refused for HTTP-banned IP %s", client_ip)
+        await ws.close(code=4001)
+        return
+
+    # Ban/abuse (WS)
     if is_banned(client_ip):
-        log.debug("[SECURITY] Connection refused for banned IP %s", client_ip)
+        log.debug("[SECURITY] WS refused for banned IP %s", client_ip)
         await ws.close(code=4001)
         return
 

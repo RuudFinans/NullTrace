@@ -51,6 +51,58 @@ const J=$("join"), C=$("capsuleBtn"), Ibtn=$("inviteBtn"), R=$("room"),
 
 Ibtn.disabled = true;
 
+/* ───────────────── Access code gate (overlay + blur) ───────────────── */
+const accessDlg = $("accessDlg");
+const accessInput = $("accessInput");
+const accessOk = $("accessOk");
+const accessErr = $("accessErr");
+
+let ACCESS_CODE = null; // holdes kun i minne – ny kode kreves ved refresh
+
+function setBackdropBlur(on) {
+  const mainEl = document.querySelector("main.container");
+  if (!mainEl) return;
+  if (on) {
+    mainEl.style.filter = "blur(6px)";
+    // inert hindrer fokus/klikk bak dialogen (bred støtte i moderne browsere)
+    mainEl.setAttribute("inert", "");
+  } else {
+    mainEl.style.filter = "";
+    mainEl.removeAttribute("inert");
+  }
+}
+
+function showAccess(reason) {
+  if (reason) accessErr.textContent = reason;
+  else accessErr.textContent = "";
+  setBackdropBlur(true);
+  if (!accessDlg.open) accessDlg.showModal();
+  accessInput.focus();
+}
+
+function hideAccess() {
+  accessErr.textContent = "";
+  if (accessDlg.open) accessDlg.close();
+  setBackdropBlur(false);
+}
+
+// Sørg for blur hvis dialogen allerede er "open" fra HTML (første load)
+if (accessDlg && accessDlg.open) setBackdropBlur(true);
+accessDlg?.addEventListener("close", () => setBackdropBlur(false));
+
+accessOk?.addEventListener("click", () => {
+  const v = (accessInput?.value || "").trim();
+  if (v.length < 20) {
+    accessErr.textContent = "Access code looks too short.";
+    accessInput.focus();
+    return;
+  }
+  ACCESS_CODE = v;
+  hideAccess();
+});
+/* ──────────────────────────────────────────────────────────────────── */
+
+
 /* State */
 let inviteInterval=null, deadmanTimer=null, greeted=false, chaffTimer=null, pingTimer=null;
 const peers=new Map(), pendingRequests=new Map(), usedHues=new Set();
@@ -104,18 +156,41 @@ function sendMessage(obj){
   ws.send(JSON.stringify(msg));
 }
 async function getRoomToken(roomId){
-  const res=await fetch("/api/room-token",{
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({room_id:roomId})
-  });
-  if(!res.ok){
-    const t=await res.text().catch(()=>String(res.status));
-    throw new Error(`Token error (${res.status}): ${t}`);
+  // Krev kode før vi forsøker
+  if (!ACCESS_CODE) {
+    showAccess("Enter your access code to continue.");
+    throw new Error("Missing access code");
   }
-  const {token}=await res.json();
-  if(!token) throw new Error("No token in response");
+
+  const res = await fetch("/api/room-token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Access-Code": ACCESS_CODE
+    },
+    body: JSON.stringify({ room_id: roomId })
+  });
+
+  if (!res.ok) {
+    // Vis gode feilmeldinger og re-åpne gate ved 401
+    if (res.status === 401) {
+      showAccess("Invalid or missing access code. Please try again.");
+    } else if (res.status === 403) {
+      addMsg("⛔ Forbidden (bad origin).", "error");
+    } else if (res.status === 429) {
+      addMsg("⏱️ Too many requests. Please wait a moment.", "error");
+    } else {
+      const t = await res.text().catch(() => String(res.status));
+      addMsg(`🚨 Token error (${res.status}): ${t}`, "error");
+    }
+    throw new Error(`Token error ${res.status}`);
+  }
+
+  const { token } = await res.json();
+  if (!token) throw new Error("No token in response");
   return token;
 }
+
 
 /* Chaff/Ping */
 function scheduleChaff(){
@@ -282,15 +357,18 @@ function readyUI(){
 
 /* Host start */
 J.onclick=()=>{
+  if (!ACCESS_CODE) { showAccess("Access code required to start."); return; } // ← NEW
+
   if(ws){
     if(!confirm("Leave the current chat and start new?")) return;
     wipeSession();
   }
-  CID = genUUID(); // ← NEW: host får ny ID hver gang
+  CID = genUUID();
   R.value=genUUID().slice(0,12);
   role="init";
   startChat();
 };
+
 
 /* Invite */
 Ibtn.onclick=()=>{
@@ -343,6 +421,8 @@ CONF_JOIN.onclick=async ()=>{
   const info=capsuleInfo;
   CONFIRMDLG.close();
 
+  if (!ACCESS_CODE) { showAccess("Access code required to join."); return; } // ← NEW
+
   // Lås ID-en som ble vist i dialogen, før ev. wipe
   if (nextCid) { CID = nextCid; nextCid = null; }
   else { CID = genUUID(); }
@@ -363,6 +443,7 @@ CONF_JOIN.onclick=async ()=>{
   renderUserList();
   startChat();
 };
+
 
 disconnectBtn.onclick=wipeSession;
 // deadman kan alltid toggles; ingen krav om aktiv grp
@@ -389,6 +470,7 @@ function scheduleGkRetry(hostCid, attempt=1, delay=GK_REQ_DELAY_MS){
 
 /* WebSocket */
 async function startChat(){
+  if (!ACCESS_CODE) { showAccess("Access code required."); return; } // ← NEW
   if(ws) return;
   if(!R.value.trim()) R.value=genUUID().slice(0,12);
   const roomId=R.value.trim();
