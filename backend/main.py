@@ -105,9 +105,12 @@ ACCESS_CODES = {
     c.strip() for c in os.getenv("NT_ACCESS_CODES", "").split(",") if c.strip()
 }
 ACCESS_SALT = os.getenv("NT_ACCESS_SALT") or secrets.token_urlsafe(32)
+OPEN_ACCESS = os.getenv("NT_OPEN_ACCESS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Logg og filtrer for korte koder
-if not ACCESS_CODES:
+if OPEN_ACCESS:
+    log.warning("Open access mode is enabled. /api/room-token will not require X-Access-Code.")
+elif not ACCESS_CODES:
     log.warning("No access codes loaded from NT_ACCESS_CODES. Server is fail-closed and will return 401.")
 else:
     too_short = [c for c in ACCESS_CODES if len(c) < ACCESS_MIN_LEN]
@@ -266,20 +269,23 @@ async def api_room_token(req: TokenReq, request: Request):
         log.warning("Suspicious token request origin=%s expected=%s|%s", origin, expected1, expected2)
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # Access-code kreves
-    access_code = request.headers.get("x-access-code", "")
-    if not _verify_access_code(access_code):
-        # Track feil og ban ved gjentatte forsøk
-        if not _track_access_failure(client_ip):
-            _ban_http(client_ip, BAN_SECONDS)
-            log.warning("[ACCESS] Too many invalid access codes from %s; banned %ss", client_ip, BAN_SECONDS)
-        # Logg med anonym fingerprint (ikke selve koden)
-        anon = _code_id(_normalize_code(access_code)) if access_code else "∅"
-        log.debug("[ACCESS] Invalid access code (id=%s) from %s", anon, client_ip)
-        raise HTTPException(status_code=401, detail="Access code required")
+    if OPEN_ACCESS:
+        anon_fp = "open"
+    else:
+        # Access-code kreves
+        access_code = request.headers.get("x-access-code", "")
+        if not _verify_access_code(access_code):
+            # Track feil og ban ved gjentatte forsøk
+            if not _track_access_failure(client_ip):
+                _ban_http(client_ip, BAN_SECONDS)
+                log.warning("[ACCESS] Too many invalid access codes from %s; banned %ss", client_ip, BAN_SECONDS)
+            # Logg med anonym fingerprint (ikke selve koden)
+            anon = _code_id(_normalize_code(access_code)) if access_code else "∅"
+            log.debug("[ACCESS] Invalid access code (id=%s) from %s", anon, client_ip)
+            raise HTTPException(status_code=401, detail="Access code required")
 
-    # Gyldig kode → utsted kortlevd, én-gangs room token
-    anon_fp = _code_id(_normalize_code(access_code))
+        # Gyldig kode → utsted kortlevd, én-gangs room token
+        anon_fp = _code_id(_normalize_code(access_code))
     token, exp = _issue_room_token(req.room_id, anon_fp)
     return TokenResp(token=token, exp=int(exp))
 
@@ -317,6 +323,7 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {
         "request": request,
         "uuid": uuid4(),  # cache-buster for static assets
+        "access_required": not OPEN_ACCESS,
     })
 
 # ─────────────────────────────────────────────────────────────────────────────

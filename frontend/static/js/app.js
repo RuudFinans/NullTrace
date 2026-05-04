@@ -57,6 +57,7 @@ const accessInput = $("accessInput");
 const accessOk = $("accessOk");
 const accessErr = $("accessErr");
 
+const ACCESS_REQUIRED = window.NULLTRACE_ACCESS_REQUIRED !== false;
 let ACCESS_CODE = null; // holdes kun i minne – ny kode kreves ved refresh
 
 function setBackdropBlur(on) {
@@ -92,12 +93,12 @@ accessDlg?.addEventListener("close", () => setBackdropBlur(false));
 
 accessOk?.addEventListener("click", () => {
   const v = (accessInput?.value || "").trim();
-  if (v.length < 20) {
+  if (ACCESS_REQUIRED && v.length < 20) {
     accessErr.textContent = "Access code looks too short.";
     accessInput.focus();
     return;
   }
-  ACCESS_CODE = v;
+  ACCESS_CODE = ACCESS_REQUIRED ? v : null;
   hideAccess();
 });
 /* ──────────────────────────────────────────────────────────────────── */
@@ -157,17 +158,17 @@ function sendMessage(obj){
 }
 async function getRoomToken(roomId){
   // Krev kode før vi forsøker
-  if (!ACCESS_CODE) {
+  if (ACCESS_REQUIRED && !ACCESS_CODE) {
     showAccess("Enter your access code to continue.");
     throw new Error("Missing access code");
   }
 
+  const headers = { "Content-Type": "application/json" };
+  if (ACCESS_REQUIRED) headers["X-Access-Code"] = ACCESS_CODE;
+
   const res = await fetch("/api/room-token", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Access-Code": ACCESS_CODE
-    },
+    headers,
     body: JSON.stringify({ room_id: roomId })
   });
 
@@ -357,7 +358,7 @@ function readyUI(){
 
 /* Host start */
 J.onclick=()=>{
-  if (!ACCESS_CODE) { showAccess("Access code required to start."); return; } // ← NEW
+  if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required to start."); return; } // ← NEW
 
   if(ws){
     if(!confirm("Leave the current chat and start new?")) return;
@@ -421,7 +422,7 @@ CONF_JOIN.onclick=async ()=>{
   const info=capsuleInfo;
   CONFIRMDLG.close();
 
-  if (!ACCESS_CODE) { showAccess("Access code required to join."); return; } // ← NEW
+  if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required to join."); return; } // ← NEW
 
   // Lås ID-en som ble vist i dialogen, før ev. wipe
   if (nextCid) { CID = nextCid; nextCid = null; }
@@ -470,7 +471,7 @@ function scheduleGkRetry(hostCid, attempt=1, delay=GK_REQ_DELAY_MS){
 
 /* WebSocket */
 async function startChat(){
-  if (!ACCESS_CODE) { showAccess("Access code required."); return; } // ← NEW
+  if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required."); return; } // ← NEW
   if(ws) return;
   if(!R.value.trim()) R.value=genUUID().slice(0,12);
   const roomId=R.value.trim();

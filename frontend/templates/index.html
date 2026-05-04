@@ -213,22 +213,25 @@
   </dialog>
 
 <dialog id="accessDlg" class="dlg" aria-labelledby="access-title" aria-describedby="access-desc">
-  <h3 id="access-title">Welcome to NullTrace (Beta)</h3>
+  <h3 id="access-title">Welcome to NullTrace</h3>
   <p id="access-desc" class="muted small">
-    We’re currently in closed beta. Access is available with an access code.
-    You can obtain one by backing the project on
-    <a href="https://kickstarter.com/projects/nulltrace/nulltrace-real-privacy" rel="noopener">Kickstarter</a>.
+    {% if access_required %}
+    Access is currently limited. Enter your access code to continue.
+    {% else %}
+    Open access — no code required.
+    {% endif %}
   </p>
 
   <label for="accessInput" class="visually-hidden">Access code</label>
   <input
     id="accessInput"
     class="mono"
-    type="password"
+    type="{{ 'password' if access_required else 'hidden' }}"
+    value=""
     inputmode="latin"
     autocomplete="off"
     spellcheck="false"
-    placeholder="Enter your access code…">
+    placeholder="{{ 'Enter your access code...' if access_required else '' }}">
 
   <p id="accessErr" class="small muted" role="status" aria-live="polite" style="min-height:1.2em"></p>
 
@@ -244,6 +247,9 @@
     </p>
   </noscript>
 
+  <script nonce="{{ request.state.csp_nonce }}">
+    window.NULLTRACE_ACCESS_REQUIRED = {{ access_required | tojson }};
+  </script>
   <script type="module" src="{{ url_for('static', path='js/app.js') }}?v={{ uuid }}"></script>
 </body>
 </html>
