@@ -1,0 +1,37 @@
+{
+  "name": "NullTrace",
+  "short_name": "NullTrace",
+  "description": "Quantum-ready, RAM-only encrypted chat with disposable rooms.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#05070a",
+  "theme_color": "#05070a",
+  "categories": ["social", "security", "utilities"],
+  "icons": [
+    {
+      "src": "/static/logo.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Open NullTrace",
+      "short_name": "Open",
+      "description": "Open the encrypted chat app.",
+      "url": "/",
+      "icons": [
+        {
+          "src": "/static/logo.png",
+          "sizes": "1024x1024",
+          "type": "image/png"
+        }
+      ]
+    }
+  ]
+}

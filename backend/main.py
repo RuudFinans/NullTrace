@@ -12,7 +12,7 @@ import hashlib
 from collections import defaultdict
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketState
@@ -76,6 +76,25 @@ app.mount(
     name="static",
 )
 templates = Jinja2Templates(directory=ROOT_DIR / "frontend" / "templates")
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def manifest():
+    return FileResponse(
+        ROOT_DIR / "frontend" / "static" / "manifest.webmanifest",
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    return FileResponse(
+        ROOT_DIR / "frontend" / "static" / "sw.js",
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "no-cache",
+            "Service-Worker-Allowed": "/",
+        },
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enkle helsesjekker

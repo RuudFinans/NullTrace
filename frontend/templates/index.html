@@ -2,12 +2,20 @@
 <html lang="en" data-version="{{ uuid }}">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>NullTrace • Quantum-ready E2EE Chat</title>
   <meta name="description" content="NullTrace — quantum-ready, RAM-only group chat with hybrid X25519 + ML-KEM, deterministic AEAD, traffic shaping, and zero telemetry.">
-  <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#0d0f14">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#05070a">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#05070a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="NullTrace">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no,address=no,email=no">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="{{ url_for('static', path='logo.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', path='logo.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
 
   <script type="importmap" nonce="{{ request.state.csp_nonce }}">
@@ -250,6 +258,7 @@
   <script nonce="{{ request.state.csp_nonce }}">
     window.NULLTRACE_ACCESS_REQUIRED = {{ access_required | tojson }};
   </script>
+  <script src="{{ url_for('static', path='js/pwa.js') }}?v={{ uuid }}" defer></script>
   <script type="module" src="{{ url_for('static', path='js/app.js') }}?v={{ uuid }}"></script>
 </body>
 </html>
