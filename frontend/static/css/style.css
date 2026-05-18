@@ -402,19 +402,30 @@ button:disabled {
   gap: var(--gap);
   align-items: start;
   margin-bottom: 12px;
+  min-width: 0;
+  width: 100%;
 }
 .chat-shell {
   border-radius: var(--radius);
-  min-height: 440px;
-  max-height: 62vh;
+  width: 100%;
+  min-width: 0;
+  height: clamp(420px, 58vh, 640px);
+  min-height: 0;
+  max-height: 640px;
   overflow: hidden;
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
 }
 .chat {
   list-style: none;
   margin: 0;
   padding: 8px;
-  overflow: auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
   scrollbar-gutter: stable;
 }
 .chat li {
@@ -477,8 +488,11 @@ textarea::-webkit-scrollbar-thumb {
 .roster {
   border-radius: var(--radius);
   padding: 12px;
-  min-height: 440px;
-  max-height: 62vh;
+  width: 100%;
+  min-width: 0;
+  height: clamp(420px, 58vh, 640px);
+  min-height: 0;
+  max-height: 640px;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto 1fr;
@@ -493,7 +507,11 @@ textarea::-webkit-scrollbar-thumb {
   letter-spacing: .08em;
   font-size: .84rem;
 }
-.user-list { overflow: auto; padding-right: 4px; }
+.user-list {
+  min-width: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
 .user-entry {
   display: grid;
   grid-template-columns: 16px minmax(0, auto);
@@ -719,13 +737,16 @@ button:focus-visible,
     display: flex;
     flex: 1 1 auto;
     min-height: 0;
+    width: 100%;
     flex-direction: column;
     gap: 10px;
     margin-bottom: 8px;
   }
   .roster {
     order: -1;
-    min-height: auto;
+    width: 100%;
+    height: auto;
+    min-height: 0;
     max-height: 92px;
     padding: 9px;
   }
@@ -754,11 +775,16 @@ button:focus-visible,
     background: rgba(106,255,185,.04);
   }
   .chat-shell {
-    flex: 1 1 auto;
-    min-height: 320px;
+    flex: 1 1 0;
+    width: 100%;
+    height: auto;
+    min-height: 0;
     max-height: none;
   }
   .chat {
+    width: 100%;
+    min-height: 0;
+    height: 100%;
     padding: 8px 7px;
   }
   .chat li {

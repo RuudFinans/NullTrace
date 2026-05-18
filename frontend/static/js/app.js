@@ -18,6 +18,10 @@ const MAX_PACKET_SIZE    = 5000;
 const BURN_BASE_MS       = 30000;
 const BURN_JITTER_MS     = 5000;
 const MIN_HUE_DISTANCE   = 60;
+const RECONNECT_MIN_MS   = 700;
+const RECONNECT_MAX_MS   = 8000;
+const HELLO_RETRY_MS     = 1500;
+const HELLO_RETRY_TRIES  = 40;
 
 // GK retry (guest ber host om å re-sende GK hvis den ikke dukker opp)
 const GK_REQ_DELAY_MS    = 300;
@@ -106,6 +110,7 @@ accessOk?.addEventListener("click", () => {
 
 /* State */
 let inviteInterval=null, deadmanTimer=null, greeted=false, chaffTimer=null, pingTimer=null;
+let reconnectTimer=null, reconnectDelay=RECONNECT_MIN_MS, desiredConnection=false, helloRetryTimer=null, helloRetryCount=0;
 const peers=new Map(), pendingRequests=new Map(), usedHues=new Set();
 
 // Buffer GK (gjest), + retry-timere
@@ -155,6 +160,44 @@ function sendMessage(obj){
   const pad=target-overhead;
   if(pad>0) msg.pad=randomString(pad);
   ws.send(JSON.stringify(msg));
+}
+function sendHello(){
+  if(!ws||ws.readyState!==WebSocket.OPEN||!localKeys) return;
+  sendMessage({ t:"hello", cid:CID, x:b64(localKeys.xPub), k:b64(localKeys.pqPub), id:b64(localKeys.idPub) });
+}
+function clearHelloRetry(){
+  clearTimeout(helloRetryTimer);
+  helloRetryTimer=null;
+  helloRetryCount=0;
+}
+function scheduleHelloRetry(){
+  if(role!=="resp") return;
+  if(grp&&grp.groupKey){ clearHelloRetry(); return; }
+  if(helloRetryCount>=HELLO_RETRY_TRIES) return;
+  clearTimeout(helloRetryTimer);
+  helloRetryTimer=setTimeout(()=>{
+    if(role!=="resp"||!ws||ws.readyState!==WebSocket.OPEN) return;
+    if(grp&&grp.groupKey){ clearHelloRetry(); return; }
+    helloRetryCount++;
+    sendHello();
+    scheduleHelloRetry();
+  }, HELLO_RETRY_MS);
+}
+function scheduleReconnect(delay=RECONNECT_MIN_MS){
+  if(!desiredConnection) return;
+  if(deadmanToggle?.checked) return;
+  if(document.hidden) return;
+  if(ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer=setTimeout(()=>{
+    reconnectTimer=null;
+    startChat({resume:true});
+  }, delay);
+}
+function resetReconnectBackoff(){
+  reconnectDelay=RECONNECT_MIN_MS;
+  clearTimeout(reconnectTimer);
+  reconnectTimer=null;
 }
 async function getRoomToken(roomId){
   // Krev kode før vi forsøker
@@ -218,6 +261,9 @@ function schedulePing(){
 
 /* Wipe / Deadman / UI helpers */
 function wipeSession(){
+  desiredConnection=false;
+  resetReconnectBackoff();
+  clearHelloRetry();
   disableDeadman();
   if(deadmanTimer){clearTimeout(deadmanTimer); deadmanTimer=null;}
   if(inviteInterval){clearInterval(inviteInterval); inviteInterval=null;}
@@ -261,6 +307,12 @@ function onVisibilityChange(){
 }
 function enableDeadman(){ window.addEventListener("visibilitychange", onVisibilityChange); }
 function disableDeadman(){ window.removeEventListener("visibilitychange", onVisibilityChange); }
+
+document.addEventListener("visibilitychange", ()=>{
+  if(!document.hidden) scheduleReconnect(120);
+});
+window.addEventListener("pageshow", ()=>scheduleReconnect(120));
+window.addEventListener("online", ()=>scheduleReconnect(120));
 
 function renderPending(){
   pendingList.innerHTML="";
@@ -470,9 +522,10 @@ function scheduleGkRetry(hostCid, attempt=1, delay=GK_REQ_DELAY_MS){
 }
 
 /* WebSocket */
-async function startChat(){
+async function startChat({resume=false}={}){
   if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required."); return; } // ← NEW
-  if(ws) return;
+  if(ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)) return;
+  if(ws) ws=null;
   if(!R.value.trim()) R.value=genUUID().slice(0,12);
   const roomId=R.value.trim();
   localKeys=localKeys||await createLocalKeys();
@@ -482,19 +535,24 @@ async function startChat(){
     token=await getRoomToken(roomId);
   }catch(e){
     addMsg(`🚨 Failed to get room token: ${e.message||e}`,"error");
+    if(resume) scheduleReconnect(Math.min(reconnectDelay*=2, RECONNECT_MAX_MS));
     return;
   }
 
+  desiredConnection=true;
   const proto=(location.protocol==="https:")?"wss":"ws";
   ws=new WebSocket(`${proto}://${location.host}/ws/${roomId}`, token);
 
   ws.onopen=()=>{
+    resetReconnectBackoff();
     peers.set(CID,{ xPub:localKeys.xPub, pqPub:localKeys.pqPub, idPub:localKeys.idPub, color:randomColor() });
     renderUserList();
-    sendMessage({ t:"hello", cid:CID, x:b64(localKeys.xPub), k:b64(localKeys.pqPub), id:b64(localKeys.idPub) });
-    grp=new MlsGroup(CID, sendMessage, readyUI, role==="init");
+    if(!resume||role==="resp"||!grp) sendHello();
+    if(!grp) grp=new MlsGroup(CID, sendMessage, readyUI, role==="init");
+    else if(grp.groupKey){ readyUI(); scheduleChaff(); }
     Ibtn.disabled = role!=="init";
     schedulePing();
+    if(role==="resp"&&(!grp||!grp.groupKey)) scheduleHelloRetry();
   };
 
   ws.onmessage=async ({data})=>{
@@ -508,8 +566,9 @@ async function startChat(){
     }
     if(m.t==="hello"){
       if(role==="init"){
+        const knownPeer=peers.has(m.cid)&&!pendingRequests.has(m.cid);
         peers.set(m.cid,{ xPub:u8(m.x), pqPub:u8(m.k), idPub:u8(m.id), color:randomColor() });
-        pendingRequests.set(m.cid,true);
+        if(!knownPeer) pendingRequests.set(m.cid,true);
         renderPending(); renderUserList();
       }
       return;
@@ -543,6 +602,7 @@ async function startChat(){
       } else {
         scheduleGkRetry(m.cid);
       }
+      clearHelloRetry();
       return;
     }
 
@@ -550,6 +610,7 @@ async function startChat(){
       const sk=grp.peers.get(m.cid);
       if(sk){
         grp.loadGK(m, sk);
+        clearHelloRetry();
         renderUserList();
       } else {
         pendingGK.set(m.cid, m);
@@ -568,15 +629,31 @@ async function startChat(){
     if(m.t==="rate"){ addMsg("⏱️ Slow down a bit…","sys"); return; }
   };
 
-  ws.onerror=()=>addMsg("🚨 WebSocket error","error");
+  ws.onerror=()=>{
+    if(!desiredConnection) addMsg("🚨 WebSocket error","error");
+  };
   ws.onclose=(ev)=>{
+    const recoverable=![4000,4001,4002,4003,4004,1009].includes(ev.code);
+    ws=null;
+    clearTimeout(chaffTimer);
+    clearTimeout(pingTimer);
+    chaffTimer=pingTimer=null;
+    S.disabled=true;
+    IN.disabled=true;
+    disconnectBtn.disabled=!desiredConnection;
+    if(!desiredConnection) return;
+
     if(ev.code===4000) addMsg("🚫 You are sending messages too fast.","error");
     else if(ev.code===4001) addMsg("🚫 You are temporarily banned. Please try again later.","error");
     else if(ev.code===4002) addMsg("⚠️ Too many connection attempts. Slow down!","error");
     else if(ev.code===4003) addMsg("⛔ Policy violation / bad origin / invalid room.","error");
     else if(ev.code===4004) addMsg("🔒 Unauthorized: missing/invalid room token.","error");
     else if(ev.code===1009) addMsg("📦 Message too big.","error");
-    else addMsg("🔌 Disconnected","error");
+    else if(desiredConnection&&recoverable&&!deadmanToggle?.checked){
+      ST.textContent="Reconnecting";
+      scheduleReconnect(reconnectDelay);
+      reconnectDelay=Math.min(reconnectDelay*2, RECONNECT_MAX_MS);
+    } else addMsg("🔌 Disconnected","error");
   };
 }
 
