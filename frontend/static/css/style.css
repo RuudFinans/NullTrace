@@ -50,6 +50,7 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --viewport-offset-top: 0px;
+  --keyboard-height: 0px;
   font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   font-size: 14px;
   color-scheme: dark;
@@ -431,7 +432,7 @@ button:disabled {
 .chat li {
   position: relative;
   margin: 0 0 7px;
-  padding: 10px 12px;
+  padding: 10px 42px 10px 12px;
   border: 1px solid rgba(106,255,185,.08);
   border-left: 3px solid transparent;
   border-radius: var(--radius-sm);
@@ -445,6 +446,7 @@ button:disabled {
   max-width: 88%;
   border-left-color: rgba(73,198,255,.72);
   text-align: right;
+  padding-left: 42px;
 }
 .chat li.error {
   color: #ffd5dc;
@@ -459,7 +461,11 @@ button:disabled {
   border-color: rgba(73,198,255,.12);
 }
 .chat li button.burn {
-  margin-left: .6rem;
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  transform: translateY(-50%);
+  margin: 0;
   background: rgba(7, 13, 16, .84);
   color: var(--muted);
   border: 1px solid rgba(106,255,185,.14);
@@ -694,8 +700,12 @@ button:focus-visible,
     height: var(--app-height, 100dvh);
     min-height: 0;
     overflow: hidden;
+    position: fixed;
+    inset: 0;
+    width: 100%;
   }
   .container {
+    width: 100%;
     height: var(--app-height, 100dvh);
     min-height: 0;
     max-height: var(--app-height, 100dvh);
@@ -705,7 +715,7 @@ button:focus-visible,
     padding:
       calc(10px + var(--safe-top))
       max(12px, var(--safe-right))
-      calc(8px + var(--safe-bottom))
+      calc(var(--bottom-bar-height) + 22px + var(--safe-bottom))
       max(12px, var(--safe-left));
   }
   .topbar {
@@ -807,12 +817,15 @@ button:focus-visible,
     max-width: 90%;
   }
   .bottom-bar {
-    position: relative;
-    flex: 0 0 auto;
+    position: fixed;
+    left: max(12px, var(--safe-left));
+    right: max(12px, var(--safe-right));
+    bottom: calc(6px + var(--safe-bottom) + var(--keyboard-height));
     z-index: 5;
     grid-template-columns: 1fr auto;
     gap: 8px;
     margin-top: 0;
+    transition: bottom .16s ease;
   }
   .compose-input,
   .room-input,
@@ -824,16 +837,6 @@ button:focus-visible,
     display: none;
   }
   .confirm-grid { grid-template-columns: 1fr; }
-  html.keyboard-active .hero {
-    display: none;
-  }
-  html.keyboard-active .roster {
-    max-height: 54px;
-  }
-  html.keyboard-active .roster-head .small,
-  html.keyboard-active .status-badges {
-    display: none;
-  }
   html.keyboard-active .bottom-bar {
     grid-template-columns: 1fr;
   }
@@ -852,6 +855,12 @@ button:focus-visible,
   .bottom-bar {
     grid-template-columns: 1fr;
     height: auto;
+  }
+  .container {
+    padding-bottom: calc(7.2rem + var(--safe-bottom));
+  }
+  html.keyboard-active .container {
+    padding-bottom: calc(var(--bottom-bar-height) + 22px + var(--safe-bottom));
   }
   .compose {
     grid-template-columns: 1fr auto;
