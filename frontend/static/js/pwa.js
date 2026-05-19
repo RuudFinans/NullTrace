@@ -6,6 +6,10 @@
   root.classList.toggle("is-standalone", standalone);
   root.classList.toggle("is-ios", ios);
 
+  function setKeyboardState(on) {
+    root.classList.toggle("keyboard-active", !!on);
+  }
+
   function setViewportVars() {
     const viewport = window.visualViewport;
     const height = viewport ? viewport.height : window.innerHeight;
@@ -19,6 +23,12 @@
   window.addEventListener("orientationchange", setViewportVars, { passive: true });
   window.visualViewport?.addEventListener("resize", setViewportVars, { passive: true });
   window.visualViewport?.addEventListener("scroll", setViewportVars, { passive: true });
+  document.addEventListener("focusin", event => {
+    if (event.target?.matches?.("#input")) setKeyboardState(true);
+  });
+  document.addEventListener("focusout", () => {
+    window.setTimeout(() => setKeyboardState(false), 80);
+  });
 
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {

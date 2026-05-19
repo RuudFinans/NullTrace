@@ -437,6 +437,17 @@ def _is_bulk(msg_text: str) -> bool:
     except Exception:
         return False
 
+def _message_type_and_cid(msg_text: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        obj = json.loads(msg_text)
+    except Exception:
+        return None, None
+    msg_type = obj.get("t")
+    cid = obj.get("cid")
+    if isinstance(cid, str) and len(cid) <= 64:
+        return msg_type, cid
+    return msg_type, None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # WebSocket endepunkt
 @app.websocket("/ws/{room_id}")
@@ -486,6 +497,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
     # Aksepter og echo valgt subprotocol
     await ws.accept(subprotocol=token)
     mgr.add(room_id, ws)
+    connection_cid: Optional[str] = None
 
     try:
         while True:
@@ -512,9 +524,17 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
             if _is_bulk(msg):
                 continue
 
+            msg_type, cid = _message_type_and_cid(msg)
+            if msg_type == "hello" and cid:
+                connection_cid = cid
+            elif msg_type == "leave" and cid != connection_cid:
+                continue
+
             await mgr.broadcast(room_id, ws, msg)
     except WebSocketDisconnect:
         mgr.remove(room_id, ws)
+        if connection_cid:
+            await mgr.broadcast(room_id, ws, json.dumps({"t": "leave", "cid": connection_cid}))
 
 # .venv\Scripts\Activate.ps1
 # uvicorn backend.main:app --reload --port 5000

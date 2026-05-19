@@ -691,13 +691,17 @@ button:focus-visible,
 @media (max-width: 820px) {
   html,
   body {
-    min-height: var(--app-height, 100dvh);
-    overflow-x: hidden;
+    height: var(--app-height, 100dvh);
+    min-height: 0;
+    overflow: hidden;
   }
   .container {
-    min-height: var(--app-height, 100dvh);
+    height: var(--app-height, 100dvh);
+    min-height: 0;
+    max-height: var(--app-height, 100dvh);
     display: flex;
     flex-direction: column;
+    overflow: hidden;
     padding:
       calc(10px + var(--safe-top))
       max(12px, var(--safe-right))
@@ -705,8 +709,8 @@ button:focus-visible,
       max(12px, var(--safe-left));
   }
   .topbar {
-    position: sticky;
-    top: calc(8px + var(--safe-top) + var(--viewport-offset-top));
+    position: relative;
+    flex: 0 0 auto;
     z-index: 4;
     flex-wrap: wrap;
     gap: 10px;
@@ -718,6 +722,7 @@ button:focus-visible,
   .status-badges { justify-content: flex-start; }
   .badge { min-height: 23px; padding-inline: 8px; font-size: .68rem; }
   .hero {
+    flex: 0 0 auto;
     margin: 10px 0;
   }
   .hero-card {
@@ -735,7 +740,7 @@ button:focus-visible,
   }
   .grid {
     display: flex;
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
     width: 100%;
     flex-direction: column;
@@ -802,8 +807,8 @@ button:focus-visible,
     max-width: 90%;
   }
   .bottom-bar {
-    position: sticky;
-    bottom: calc(6px + var(--safe-bottom));
+    position: relative;
+    flex: 0 0 auto;
     z-index: 5;
     grid-template-columns: 1fr auto;
     gap: 8px;
@@ -819,6 +824,22 @@ button:focus-visible,
     display: none;
   }
   .confirm-grid { grid-template-columns: 1fr; }
+  html.keyboard-active .hero {
+    display: none;
+  }
+  html.keyboard-active .roster {
+    max-height: 54px;
+  }
+  html.keyboard-active .roster-head .small,
+  html.keyboard-active .status-badges {
+    display: none;
+  }
+  html.keyboard-active .bottom-bar {
+    grid-template-columns: 1fr;
+  }
+  html.keyboard-active .controls {
+    display: none;
+  }
 }
 @media (max-width: 560px) {
   .quick-actions { grid-template-columns: 1fr; }

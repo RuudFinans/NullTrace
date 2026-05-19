@@ -111,6 +111,7 @@ accessOk?.addEventListener("click", () => {
 /* State */
 let inviteInterval=null, deadmanTimer=null, greeted=false, chaffTimer=null, pingTimer=null;
 let reconnectTimer=null, reconnectDelay=RECONNECT_MIN_MS, desiredConnection=false, helloRetryTimer=null, helloRetryCount=0;
+let inviteCopyBusy=false;
 const peers=new Map(), pendingRequests=new Map(), usedHues=new Set();
 
 // Buffer GK (gjest), + retry-timere
@@ -454,22 +455,43 @@ Ibtn.onclick=()=>{
   },1000);
   IDLG.showModal();
 };
-INV_COPY.onclick=async ()=>{
+async function copyInviteCapsule(ev){
+  ev?.preventDefault();
+  if(inviteCopyBusy) return;
   const capsule=ITXT.value;
   if(!capsule) return;
+  inviteCopyBusy=true;
   try{
-    await navigator.clipboard.writeText(capsule);
+    if(navigator.clipboard&&window.isSecureContext) await navigator.clipboard.writeText(capsule);
+    else throw new Error("clipboard api unavailable");
   }catch{
-    ITXT.disabled=false;
-    ITXT.focus();
-    ITXT.select();
+    const ta=document.createElement("textarea");
+    ta.value=capsule;
+    ta.setAttribute("readonly", "");
+    ta.setAttribute("aria-hidden", "true");
+    ta.style.position="fixed";
+    ta.style.left="-9999px";
+    ta.style.top="0";
+    ta.style.width="1px";
+    ta.style.height="1px";
+    ta.style.opacity="0";
+    ta.style.fontSize="16px";
+    document.body.appendChild(ta);
+    ta.focus({preventScroll:true});
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
     document.execCommand("copy");
-    ITXT.setSelectionRange(0, 0);
-    ITXT.disabled = INV_TIMER.textContent === "Expired";
+    ta.remove();
   }
   INV_COPY.textContent="Copied";
-  setTimeout(()=>{ if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy"; }, 1200);
-};
+  setTimeout(()=>{
+    inviteCopyBusy=false;
+    if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy";
+  }, 1200);
+}
+if(window.PointerEvent) INV_COPY.addEventListener("pointerup", copyInviteCapsule);
+else INV_COPY.addEventListener("touchend", copyInviteCapsule, {passive:false});
+INV_COPY.addEventListener("click", copyInviteCapsule);
 INV_CLOSE.onclick=()=>{ clearInterval(inviteInterval); IDLG.close(); };
 
 /* Guest paste & confirm */
