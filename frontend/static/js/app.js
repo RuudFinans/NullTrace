@@ -49,7 +49,7 @@ const J=$("join"), C=$("capsuleBtn"), Ibtn=$("inviteBtn"), R=$("room"),
       POK=$("pasteOk"), CONFIRMDLG=$("confirmDlg"), CONF_ROOM=$("confirmRoom"),
       CONF_HOSTFP=$("confirmHostFP"), CONF_GUESTFP=$("confirmGuestFP"),
       CONF_JOIN=$("confirmJoinBtn"), CONF_CANCEL=$("confirmCancelBtn"),
-      INV_CLOSE=$("inviteCloseBtn"), deadmanToggle=$("deadmanToggle"),
+      INV_CLOSE=$("inviteCloseBtn"), INV_COPY=$("inviteCopyBtn"), deadmanToggle=$("deadmanToggle"),
       disconnectBtn=$("disconnectBtn"),
       P_CANCEL=$("pasteCancelBtn");          // ← NEW: no inline onclick
 
@@ -120,6 +120,7 @@ let CID=genUUID();
 let localKeys, grp, ws=null;
 let role=null;
 let capsuleInfo=null;
+let capsuleRaw=null;
 let nextCid = null; // ← NEW: pre-generert ID som vises i confirm og brukes ved join
 
 // Host-side rekey throttle
@@ -426,6 +427,10 @@ J.onclick=()=>{
 /* Invite */
 Ibtn.onclick=()=>{
   ITXT.disabled = false;                 // re-enable i tilfelle tidligere invite utløp
+  if(INV_COPY){
+    INV_COPY.disabled = false;
+    INV_COPY.textContent = "Copy";
+  }
   ITXT.value=createCapsule(
     R.value.trim()||genUUID().slice(0,12),
     localKeys.xPub, localKeys.pqPub,
@@ -440,6 +445,7 @@ Ibtn.onclick=()=>{
       clearInterval(inviteInterval);
       INV_TIMER.textContent="Expired";
       ITXT.disabled=true;
+      if(INV_COPY) INV_COPY.disabled=true;
       return;
     }
     const m=String(Math.floor(rem/60000)).padStart(2,"00"),
@@ -448,16 +454,34 @@ Ibtn.onclick=()=>{
   },1000);
   IDLG.showModal();
 };
+INV_COPY.onclick=async ()=>{
+  const capsule=ITXT.value;
+  if(!capsule) return;
+  try{
+    await navigator.clipboard.writeText(capsule);
+  }catch{
+    ITXT.disabled=false;
+    ITXT.focus();
+    ITXT.select();
+    document.execCommand("copy");
+    ITXT.setSelectionRange(0, 0);
+    ITXT.disabled = INV_TIMER.textContent === "Expired";
+  }
+  INV_COPY.textContent="Copied";
+  setTimeout(()=>{ if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy"; }, 1200);
+};
 INV_CLOSE.onclick=()=>{ clearInterval(inviteInterval); IDLG.close(); };
 
 /* Guest paste & confirm */
 C.onclick=()=>PDL.showModal();
 POK.onclick=async ()=>{
-  const obj=parseCapsule(PTXT.value.trim());
+  const raw=PTXT.value.trim();
+  const obj=parseCapsule(raw);
   if(!obj){ alert("❌ Invalid or expired capsule"); return; }
   PDL.close();
   localKeys=localKeys||await createLocalKeys();
   capsuleInfo=obj;
+  capsuleRaw=raw;
   CONF_ROOM.textContent=obj.room;
   CONF_HOSTFP.textContent=obj.cid.slice(0,6);
   nextCid = genUUID(); // ← NEW: pre-generer ID som vises og faktisk brukes etter join
@@ -471,7 +495,15 @@ CONF_CANCEL.onclick=()=>CONFIRMDLG.close();
 
 /* Confirm join (guest) */
 CONF_JOIN.onclick=async ()=>{
-  const info=capsuleInfo;
+  const info=parseCapsule(capsuleRaw || "");
+  if(!info){
+    capsuleInfo=null;
+    capsuleRaw=null;
+    CONFIRMDLG.close();
+    alert("❌ Invite capsule expired. Ask the host for a new one.");
+    return;
+  }
+  capsuleInfo=info;
   CONFIRMDLG.close();
 
   if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required to join."); return; } // ← NEW

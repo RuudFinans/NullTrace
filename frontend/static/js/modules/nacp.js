@@ -15,6 +15,9 @@ const MAX_CAPSULE_BYTES = 4096; // defensiv grense på base64-dekodet JSON
 // Versjon/alg – gir oss mulighet til å migrere senere
 const CAPSULE_VER = "NT-C1";
 const CAPSULE_ALG = "Ed25519|X25519+ML-KEM-512";
+const ROOM_RE = /^[A-Za-z0-9_-]{6,64}$/;
+const CID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CLOCK_SKEW_MS = 10 * 1000;
 
 // ───────────────────────────────────────────────────────────────
 // Utils
@@ -104,23 +107,30 @@ export function parseCapsule(str) {
 
     const { v, alg, room, cid, x, k, iat, exp } = payload;
 
+    if (v !== CAPSULE_VER || alg !== CAPSULE_ALG) return null;
+    if (typeof room !== "string" || !ROOM_RE.test(room)) return null;
+    if (typeof cid !== "string" || !CID_RE.test(cid)) return null;
+    if (typeof iat !== "number" || typeof exp !== "number") return null;
+
     // TTL-sjekker
     const now = Date.now();
-    if (typeof exp !== "number" || now > exp) return null;
-    if (typeof iat === "number" && (iat > now || exp - iat > CAPSULE_TTL_MS * 2)) {
-      // unormal iat (i fremtiden eller altfor langt vindu)
-      return null;
-    }
+    if (now > exp) return null;
+    if (iat > now + CLOCK_SKEW_MS) return null;
+    if (exp <= iat || exp - iat > CAPSULE_TTL_MS) return null;
 
     // Signatur-sjekk – bygg transkript etter hva kapselen faktisk inneholder
     const transcript = buildCapsuleTranscript(payload);
     const idPubBytes = u8(id);
     const sigBytes   = u8(sig);
+    if (idPubBytes.length !== sodium.crypto_sign_PUBLICKEYBYTES) return null;
+    if (sigBytes.length !== sodium.crypto_sign_BYTES) return null;
     if (!verifyDetached(sigBytes, transcript, idPubBytes)) return null;
 
     // Dekode nøkler
     const xPub  = u8(x);
     const pqPub = u8(k);
+    if (xPub.length !== sodium.crypto_kx_PUBLICKEYBYTES) return null;
+    if (pqPub.length !== 800) return null;
 
     return {
       room,
@@ -128,8 +138,8 @@ export function parseCapsule(str) {
       xPub,
       pqPub,
       idPub: idPubBytes,
-      ver: v || "legacy",
-      alg: alg || "legacy"
+      ver: v,
+      alg
     };
   } catch {
     return null;
