@@ -32,7 +32,6 @@
       setKeyboardState(true);
       window.setTimeout(() => {
         setViewportVars();
-        window.scrollTo(0, 0);
       }, 80);
     }
   });

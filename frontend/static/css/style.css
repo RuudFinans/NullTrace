@@ -715,7 +715,7 @@ button:focus-visible,
     padding:
       calc(10px + var(--safe-top))
       max(12px, var(--safe-right))
-      calc(var(--bottom-bar-height) + 22px + var(--safe-bottom))
+      calc(var(--bottom-bar-height) + 22px + var(--safe-bottom) + var(--keyboard-height))
       max(12px, var(--safe-left));
   }
   .topbar {
@@ -857,10 +857,10 @@ button:focus-visible,
     height: auto;
   }
   .container {
-    padding-bottom: calc(7.2rem + var(--safe-bottom));
+    padding-bottom: calc(7.2rem + var(--safe-bottom) + var(--keyboard-height));
   }
   html.keyboard-active .container {
-    padding-bottom: calc(var(--bottom-bar-height) + 22px + var(--safe-bottom));
+    padding-bottom: calc(7.2rem + var(--safe-bottom) + var(--keyboard-height));
   }
   .compose {
     grid-template-columns: 1fr auto;

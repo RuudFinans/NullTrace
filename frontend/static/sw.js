@@ -1,4 +1,4 @@
-const CACHE_NAME = "nulltrace-shell-v7";
+const CACHE_NAME = "nulltrace-shell-v8";
 
 const APP_SHELL = [
   "/",

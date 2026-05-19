@@ -357,7 +357,7 @@ function addMsg(txt, cls="in", fromCid=null){
   burn.onclick=()=>li.remove();
   li.appendChild(burn);
   CH.append(li);
-  CH.scrollTop=CH.scrollHeight;
+  requestAnimationFrame(()=>{ CH.scrollTop=CH.scrollHeight; });
   const timeout=BURN_BASE_MS+(Math.random()*BURN_JITTER_MS-BURN_JITTER_MS/2);
   setTimeout(()=>li.remove(), timeout);
 }
@@ -460,23 +460,28 @@ async function copyInviteCapsule(){
   const capsule=ITXT.value;
   if(!capsule) return;
   inviteCopyBusy=true;
-  const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
   let copied=false;
   try{
-    ITXT.readOnly=true;
-    ITXT.focus({preventScroll:true});
-    ITXT.select();
-    ITXT.setSelectionRange(0, capsule.length);
-    if(!isIOS&&navigator.clipboard&&window.isSecureContext){
+    if(navigator.clipboard&&window.isSecureContext){
       await navigator.clipboard.writeText(capsule);
       copied=true;
     } else {
+      ITXT.readOnly=true;
+      ITXT.focus({preventScroll:true});
+      ITXT.select();
+      ITXT.setSelectionRange(0, capsule.length);
       copied=document.execCommand("copy");
     }
   }catch{
-    try{ copied=document.execCommand("copy"); }catch{}
+    try{
+      ITXT.readOnly=true;
+      ITXT.focus({preventScroll:true});
+      ITXT.select();
+      ITXT.setSelectionRange(0, capsule.length);
+      copied=document.execCommand("copy");
+    }catch{}
   }
-  INV_COPY.textContent=copied ? "Copied" : "Selected";
+  INV_COPY.textContent=copied ? "Copied" : "Selected - Copy";
   setTimeout(()=>{
     inviteCopyBusy=false;
     if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy";
@@ -721,3 +726,6 @@ S.onclick=()=>{
   IN.value="";
 };
 IN.addEventListener("keydown", e=> e.key==="Enter" && S.click());
+IN.addEventListener("focus", ()=>{
+  setTimeout(()=>{ CH.scrollTop=CH.scrollHeight; }, 220);
+});
