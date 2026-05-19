@@ -455,42 +455,54 @@ Ibtn.onclick=()=>{
   },1000);
   IDLG.showModal();
 };
-async function copyInviteCapsule(ev){
-  ev?.preventDefault();
+function copyTextFallback(text){
+  const ta=document.createElement("textarea");
+  ta.value=text;
+  ta.readOnly=true;
+  ta.setAttribute("aria-hidden", "true");
+  ta.style.position="fixed";
+  ta.style.inset="0 auto auto 0";
+  ta.style.width="2px";
+  ta.style.height="2px";
+  ta.style.opacity="0.01";
+  ta.style.pointerEvents="none";
+  ta.style.fontSize="16px";
+  document.body.appendChild(ta);
+  const selection=document.getSelection();
+  const previousRange=selection&&selection.rangeCount ? selection.getRangeAt(0) : null;
+  ta.focus({preventScroll:true});
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  const ok=document.execCommand("copy");
+  ta.remove();
+  if(previousRange&&selection){
+    selection.removeAllRanges();
+    selection.addRange(previousRange);
+  }
+  return ok;
+}
+async function copyInviteCapsule(){
   if(inviteCopyBusy) return;
   const capsule=ITXT.value;
   if(!capsule) return;
   inviteCopyBusy=true;
+  const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
+  let copied=false;
   try{
-    if(navigator.clipboard&&window.isSecureContext) await navigator.clipboard.writeText(capsule);
-    else throw new Error("clipboard api unavailable");
+    if(isIOS) copied=copyTextFallback(capsule);
+    else if(navigator.clipboard&&window.isSecureContext){
+      await navigator.clipboard.writeText(capsule);
+      copied=true;
+    } else copied=copyTextFallback(capsule);
   }catch{
-    const ta=document.createElement("textarea");
-    ta.value=capsule;
-    ta.setAttribute("readonly", "");
-    ta.setAttribute("aria-hidden", "true");
-    ta.style.position="fixed";
-    ta.style.left="-9999px";
-    ta.style.top="0";
-    ta.style.width="1px";
-    ta.style.height="1px";
-    ta.style.opacity="0";
-    ta.style.fontSize="16px";
-    document.body.appendChild(ta);
-    ta.focus({preventScroll:true});
-    ta.select();
-    ta.setSelectionRange(0, ta.value.length);
-    document.execCommand("copy");
-    ta.remove();
+    copied=copyTextFallback(capsule);
   }
-  INV_COPY.textContent="Copied";
+  INV_COPY.textContent=copied ? "Copied" : "Copy failed";
   setTimeout(()=>{
     inviteCopyBusy=false;
     if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy";
   }, 1200);
 }
-if(window.PointerEvent) INV_COPY.addEventListener("pointerup", copyInviteCapsule);
-else INV_COPY.addEventListener("touchend", copyInviteCapsule, {passive:false});
 INV_COPY.addEventListener("click", copyInviteCapsule);
 INV_CLOSE.onclick=()=>{ clearInterval(inviteInterval); IDLG.close(); };
 
