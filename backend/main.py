@@ -362,6 +362,8 @@ BULK_WINDOW_SECONDS = 60
 CONNECT_LIMIT = 30
 CONNECT_WINDOW_SECONDS = 60
 WS_BAN_SECONDS = 60  # egen WS-ban
+REPLAY_TTL_SECONDS = int(os.getenv("NT_REPLAY_TTL_SECONDS", "35"))
+MAX_REPLAY_PER_ROOM = int(os.getenv("NT_REPLAY_MAX_PER_ROOM", "200"))
 
 MAX_MESSAGE_BYTES = 16384    # romsligere pga padding (3–5 KB hos oss)
 
@@ -370,6 +372,7 @@ client_times_ctrl = defaultdict(list)
 client_times_bulk = defaultdict(list)   # beholdt for ev. observasjon
 client_connect_times = defaultdict(list)
 banned_ips: Dict[str, float] = {}       # ip -> ban_until_ts (WS)
+room_replay = defaultdict(list)         # room -> [(ts, type, cid, to, msg_json), ...]
 
 def _client_ip_from_ws(ws: WebSocket) -> str:
     xff = ws.headers.get("x-forwarded-for")
@@ -437,16 +440,50 @@ def _is_bulk(msg_text: str) -> bool:
     except Exception:
         return False
 
-def _message_type_and_cid(msg_text: str) -> Tuple[Optional[str], Optional[str]]:
+def _message_meta(msg_text: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[dict]]:
     try:
         obj = json.loads(msg_text)
     except Exception:
-        return None, None
+        return None, None, None, None
     msg_type = obj.get("t")
     cid = obj.get("cid")
-    if isinstance(cid, str) and len(cid) <= 64:
-        return msg_type, cid
-    return msg_type, None
+    to = obj.get("to")
+    if not isinstance(cid, str) or len(cid) > 64:
+        cid = None
+    if not isinstance(to, str) or len(to) > 64:
+        to = None
+    return msg_type, cid, to, obj
+
+def _prune_replay(room: str) -> None:
+    cutoff = time.time() - REPLAY_TTL_SECONDS
+    room_replay[room] = [entry for entry in room_replay[room] if entry[0] >= cutoff]
+    if len(room_replay[room]) > MAX_REPLAY_PER_ROOM:
+        room_replay[room] = room_replay[room][-MAX_REPLAY_PER_ROOM:]
+
+def _remember_replay(room: str, msg_type: Optional[str], cid: Optional[str], to: Optional[str], obj: Optional[dict], raw: str) -> str:
+    if msg_type not in {"m", "gk"}:
+        return raw
+    if not cid:
+        return raw
+    now = time.time()
+    if obj is not None:
+        obj.setdefault("rt", int(now * 1000))
+        raw = json.dumps(obj, separators=(",", ":"))
+    room_replay[room].append((now, msg_type, cid, to, raw))
+    _prune_replay(room)
+    return raw
+
+async def _replay_recent(room: str, ws: WebSocket, cid: str) -> None:
+    _prune_replay(room)
+    for _ts, msg_type, sender_cid, target_cid, raw in list(room_replay[room]):
+        if msg_type == "m" and sender_cid == cid:
+            continue
+        if msg_type == "gk" and target_cid != cid:
+            continue
+        try:
+            await ws.send_text(raw)
+        except Exception:
+            break
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WebSocket endepunkt
@@ -524,11 +561,14 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
             if _is_bulk(msg):
                 continue
 
-            msg_type, cid = _message_type_and_cid(msg)
+            msg_type, cid, to, obj = _message_meta(msg)
             if msg_type == "hello" and cid:
                 connection_cid = cid
+                await _replay_recent(room_id, ws, cid)
             elif msg_type == "leave" and cid != connection_cid:
                 continue
+
+            msg = _remember_replay(room_id, msg_type, cid, to, obj, msg)
 
             await mgr.broadcast(room_id, ws, msg)
     except WebSocketDisconnect:

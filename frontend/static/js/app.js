@@ -17,6 +17,7 @@ const MIN_PACKET_SIZE    = 3000;
 const MAX_PACKET_SIZE    = 5000;
 const BURN_BASE_MS       = 30000;
 const BURN_JITTER_MS     = 5000;
+const BURN_MAX_MS        = BURN_BASE_MS + BURN_JITTER_MS;
 const MIN_HUE_DISTANCE   = 60;
 const RECONNECT_MIN_MS   = 700;
 const RECONNECT_MAX_MS   = 8000;
@@ -349,7 +350,11 @@ function renderUserList(){
     c.appendChild(d);
   }
 }
-function addMsg(txt, cls="in", fromCid=null){
+function remainingBurnMs(msg){
+  if(typeof msg?.rt !== "number") return null;
+  return Math.max(0, msg.rt + BURN_MAX_MS - Date.now());
+}
+function addMsg(txt, cls="in", fromCid=null, ttlMs=null){
   const li=Object.assign(document.createElement("li"),{className:cls});
   if(fromCid&&peers.has(fromCid)) li.style.borderLeftColor=peers.get(fromCid).color;
   li.textContent=txt;
@@ -358,7 +363,7 @@ function addMsg(txt, cls="in", fromCid=null){
   li.appendChild(burn);
   CH.append(li);
   requestAnimationFrame(()=>{ CH.scrollTop=CH.scrollHeight; });
-  const timeout=BURN_BASE_MS+(Math.random()*BURN_JITTER_MS-BURN_JITTER_MS/2);
+  const timeout=ttlMs ?? (BURN_BASE_MS+(Math.random()*BURN_JITTER_MS-BURN_JITTER_MS/2));
   setTimeout(()=>li.remove(), timeout);
 }
 
@@ -604,7 +609,7 @@ async function startChat({resume=false}={}){
     resetReconnectBackoff();
     peers.set(CID,{ xPub:localKeys.xPub, pqPub:localKeys.pqPub, idPub:localKeys.idPub, color:randomColor() });
     renderUserList();
-    if(!resume||role==="resp"||!grp) sendHello();
+    sendHello();
     if(!grp) grp=new MlsGroup(CID, sendMessage, readyUI, role==="init");
     else if(grp.groupKey){ readyUI(); scheduleChaff(); }
     Ibtn.disabled = role!=="init";
@@ -679,7 +684,10 @@ async function startChat({resume=false}={}){
 
     if(m.t==="m"){
       const txt=grp.decrypt(m);
-      if(txt!==null) addMsg(txt,"in", m.cid);
+      if(txt!==null){
+        const ttl=remainingBurnMs(m);
+        if(ttl !== 0) addMsg(txt,"in", m.cid, ttl);
+      }
       return;
     }
 
