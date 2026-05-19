@@ -191,7 +191,16 @@
   <dialog id="inviteDlg" class="dlg" aria-labelledby="invite-title">
     <h3 id="invite-title">Share capsule</h3>
     <p class="muted small">Expires in <span id="inviteTimer">02:00</span></p>
-    <textarea id="inviteTxt" readonly class="mono" rows="5"></textarea>
+    <textarea
+      id="inviteTxt"
+      readonly
+      class="mono"
+      rows="5"
+      autocomplete="off"
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"
+      inputmode="none"></textarea>
     <div class="dlg-buttons">
       <button id="inviteCopyBtn" class="btn primary" type="button">Copy</button>
       <button id="inviteCloseBtn" class="btn" type="button">Close</button>

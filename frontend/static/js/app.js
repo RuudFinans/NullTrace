@@ -455,32 +455,6 @@ Ibtn.onclick=()=>{
   },1000);
   IDLG.showModal();
 };
-function copyTextFallback(text){
-  const ta=document.createElement("textarea");
-  ta.value=text;
-  ta.readOnly=true;
-  ta.setAttribute("aria-hidden", "true");
-  ta.style.position="fixed";
-  ta.style.inset="0 auto auto 0";
-  ta.style.width="2px";
-  ta.style.height="2px";
-  ta.style.opacity="0.01";
-  ta.style.pointerEvents="none";
-  ta.style.fontSize="16px";
-  document.body.appendChild(ta);
-  const selection=document.getSelection();
-  const previousRange=selection&&selection.rangeCount ? selection.getRangeAt(0) : null;
-  ta.focus({preventScroll:true});
-  ta.select();
-  ta.setSelectionRange(0, ta.value.length);
-  const ok=document.execCommand("copy");
-  ta.remove();
-  if(previousRange&&selection){
-    selection.removeAllRanges();
-    selection.addRange(previousRange);
-  }
-  return ok;
-}
 async function copyInviteCapsule(){
   if(inviteCopyBusy) return;
   const capsule=ITXT.value;
@@ -489,22 +463,34 @@ async function copyInviteCapsule(){
   const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
   let copied=false;
   try{
-    if(isIOS) copied=copyTextFallback(capsule);
-    else if(navigator.clipboard&&window.isSecureContext){
+    ITXT.readOnly=true;
+    ITXT.focus({preventScroll:true});
+    ITXT.select();
+    ITXT.setSelectionRange(0, capsule.length);
+    if(!isIOS&&navigator.clipboard&&window.isSecureContext){
       await navigator.clipboard.writeText(capsule);
       copied=true;
-    } else copied=copyTextFallback(capsule);
+    } else {
+      copied=document.execCommand("copy");
+    }
   }catch{
-    copied=copyTextFallback(capsule);
+    try{ copied=document.execCommand("copy"); }catch{}
   }
-  INV_COPY.textContent=copied ? "Copied" : "Copy failed";
+  INV_COPY.textContent=copied ? "Copied" : "Selected";
   setTimeout(()=>{
     inviteCopyBusy=false;
     if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy";
   }, 1200);
 }
 INV_COPY.addEventListener("click", copyInviteCapsule);
-INV_CLOSE.onclick=()=>{ clearInterval(inviteInterval); IDLG.close(); };
+function closeInviteDialog(ev){
+  ev?.preventDefault();
+  inviteCopyBusy=false;
+  clearInterval(inviteInterval);
+  ITXT.blur();
+  if(IDLG.open) IDLG.close();
+}
+INV_CLOSE.addEventListener("click", closeInviteDialog);
 
 /* Guest paste & confirm */
 C.onclick=()=>PDL.showModal();
