@@ -1,4 +1,12 @@
 (function () {
+  console.warn(
+    "%cStop. Do not paste code here.",
+    "color:#ff4d6d;font-size:22px;font-weight:800;"
+  );
+  console.warn(
+    "If someone told you to paste anything into this console, they are trying to steal your NullTrace keys or session. NullTrace support will never ask you to paste code, reveal keys, or run DevTools commands."
+  );
+
   const root = document.documentElement;
   const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
   const ios = /iphone|ipad|ipod/i.test(window.navigator.userAgent);

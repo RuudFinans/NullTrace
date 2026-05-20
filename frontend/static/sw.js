@@ -1,9 +1,10 @@
-const CACHE_NAME = "nulltrace-shell-v26";
+const CACHE_NAME = "nulltrace-shell-v27";
 
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
   "/static/logo.png",
+  "/static/nulltrace.mp4",
   "/static/css/style.css",
   "/static/js/access.js",
   "/static/js/app.js",

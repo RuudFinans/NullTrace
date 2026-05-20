@@ -26,6 +26,7 @@ let heartbeatTimer = null;
 let heartbeatSeconds = 60;
 let claimedKeys = null;
 let devnetPaymentFaucet = false;
+const keyFieldValues = new WeakMap();
 
 function showScreen(name) {
   document.querySelectorAll(".access-screen").forEach(screen => {
@@ -276,7 +277,7 @@ function maskKey(value) {
 }
 
 function setKeyField(field, value, revealed) {
-  field.dataset.value = value;
+  keyFieldValues.set(field, value);
   field.textContent = revealed ? value : maskKey(value);
   field.classList.toggle("is-hidden", !revealed);
 }
@@ -284,8 +285,8 @@ function setKeyField(field, value, revealed) {
 function showKeys(keys) {
   setKeyField($("userKeyField"), keys.userKey, false);
   setKeyField($("restoreKeyField"), keys.restoreKey, false);
-  $("backupUserKey").textContent = keys.userKey;
-  $("backupRestoreKey").textContent = keys.restoreKey;
+  $("backupUserKey").textContent = "";
+  $("backupRestoreKey").textContent = "";
   if (navigator.share) shareKeysBtn.hidden = false;
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
@@ -297,7 +298,7 @@ function toggleField(fieldId, buttonId) {
   const field = $(fieldId);
   const button = $(buttonId);
   const next = field.classList.contains("is-hidden");
-  setKeyField(field, field.dataset.value || "", next);
+  setKeyField(field, keyFieldValues.get(field) || "", next);
   button.textContent = next ? "Hide" : "Reveal";
 }
 
@@ -384,6 +385,19 @@ function downloadBackupFile() {
   URL.revokeObjectURL(url);
 }
 
+function showBackupCard() {
+  if (!claimedKeys) return;
+  $("backupUserKey").textContent = claimedKeys.userKey;
+  $("backupRestoreKey").textContent = claimedKeys.restoreKey;
+  $("backupCard").hidden = false;
+}
+
+function hideBackupCard() {
+  $("backupCard").hidden = true;
+  $("backupUserKey").textContent = "";
+  $("backupRestoreKey").textContent = "";
+}
+
 function bindAccessEvents() {
   $("payAccessBtn").addEventListener("click", async () => {
     showScreen("planScreen");
@@ -414,12 +428,8 @@ function bindAccessEvents() {
   $("copyBothKeysBtn").addEventListener("click", event => copyText(keysText(), event.currentTarget));
   $("toggleUserKeyBtn").addEventListener("click", () => toggleField("userKeyField", "toggleUserKeyBtn"));
   $("toggleRestoreKeyBtn").addEventListener("click", () => toggleField("restoreKeyField", "toggleRestoreKeyBtn"));
-  $("showBackupCardBtn").addEventListener("click", () => {
-    $("backupCard").hidden = false;
-  });
-  $("closeBackupCardBtn").addEventListener("click", () => {
-    $("backupCard").hidden = true;
-  });
+  $("showBackupCardBtn").addEventListener("click", showBackupCard);
+  $("closeBackupCardBtn").addEventListener("click", hideBackupCard);
   shareKeysBtn.addEventListener("click", async () => {
     if (!navigator.share) return;
     if (!window.confirm("Only share this to a secure place you control.")) return;
