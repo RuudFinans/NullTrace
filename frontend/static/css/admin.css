@@ -9,6 +9,17 @@
   padding: calc(18px + var(--safe-top)) max(16px, var(--safe-right)) calc(24px + var(--safe-bottom)) max(16px, var(--safe-left));
 }
 
+body.admin-auth-pending .admin-login,
+body.admin-authenticated .admin-login,
+body.admin-unauthenticated .admin-dashboard {
+  display: none !important;
+}
+
+body.admin-unauthenticated .admin-login,
+body.admin-authenticated .admin-dashboard {
+  display: grid;
+}
+
 .admin-login,
 .admin-card,
 .admin-topbar {
@@ -49,6 +60,10 @@
 .admin-dashboard {
   display: grid;
   gap: 16px;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .admin-topbar {

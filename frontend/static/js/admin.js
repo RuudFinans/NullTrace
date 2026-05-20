@@ -9,6 +9,12 @@
 
   const fmt = new Intl.NumberFormat("en-US");
 
+  function setAuthState(state) {
+    document.body.classList.toggle("admin-auth-pending", state === "pending");
+    document.body.classList.toggle("admin-unauthenticated", state === "unauthenticated");
+    document.body.classList.toggle("admin-authenticated", state === "authenticated");
+  }
+
   async function request(path, options = {}) {
     const response = await fetch(`${apiBase}${path}`, {
       credentials: "same-origin",
@@ -112,6 +118,7 @@
     const data = await request("/dashboard");
     login.hidden = true;
     dashboard.hidden = false;
+    setAuthState("authenticated");
     document.getElementById("adminUpdatedAt").textContent = `Updated ${new Date().toLocaleString()}`;
     renderCards(data);
     renderActivity(data);
@@ -126,6 +133,7 @@
       password.value = "";
       await loadDashboard();
     } catch (error) {
+      setAuthState("unauthenticated");
       loginStatus.textContent = error.message;
     }
   }
@@ -134,6 +142,7 @@
     await request("/logout", { method: "POST", body: "{}" }).catch(() => {});
     dashboard.hidden = true;
     login.hidden = false;
+    setAuthState("unauthenticated");
   }
 
   async function generateAccess() {
@@ -180,5 +189,6 @@
   loadDashboard().catch(() => {
     dashboard.hidden = true;
     login.hidden = false;
+    setAuthState("unauthenticated");
   });
 })();
