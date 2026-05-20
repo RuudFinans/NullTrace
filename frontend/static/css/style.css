@@ -1202,53 +1202,71 @@ html.is-ios textarea {
 }
 
 .landing-hero {
-  min-height: min(620px, calc(var(--app-height, 100dvh) - 96px));
+  min-height: min(540px, calc(var(--app-height, 100dvh) - 92px));
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 340px);
+  grid-template-columns: minmax(0, .92fr) minmax(320px, 1fr);
   gap: clamp(22px, 5vw, 58px);
   align-items: center;
   border-bottom: 1px solid rgba(106,255,185,.1);
-  padding: clamp(18px, 4vw, 38px) 0 clamp(22px, 5vw, 54px);
+  padding: clamp(28px, 6vw, 72px) 0 clamp(26px, 5vw, 58px);
 }
 
 .landing-copy {
   display: grid;
-  gap: 18px;
-  max-width: 720px;
+  justify-items: start;
+  gap: 20px;
+  max-width: 500px;
+  margin: 0;
+  text-align: left;
 }
 
-.landing-kicker {
-  margin: 0;
-  max-width: 760px;
-  color: #f1fff8;
-  font-size: clamp(2rem, 6vw, 4.9rem);
-  line-height: .98;
-  font-weight: 600;
+.landing-brand {
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.landing-brand .access-logo {
+  width: clamp(86px, 10vw, 132px);
+  height: clamp(86px, 10vw, 132px);
+  border-radius: 22px;
+  border-color: rgba(106,255,185,.34);
+  box-shadow: 0 22px 70px rgba(0,0,0,.34), 0 0 48px rgba(106,255,185,.08);
+}
+
+.landing-brand h1 {
+  font-size: clamp(1.65rem, 4vw, 3.4rem);
+  letter-spacing: .16em;
 }
 
 .landing-lead {
-  max-width: 650px;
+  max-width: 680px;
   margin: 0;
-  color: #a9bcb5;
+  color: #b5c9c1;
   font-size: clamp(1rem, 1.8vw, 1.18rem);
   line-height: 1.62;
 }
 
-.landing-signal {
-  display: grid;
-  gap: 10px;
-  align-content: center;
-  border-left: 1px solid rgba(106,255,185,.12);
-  padding-left: clamp(18px, 3vw, 32px);
-  color: #8fa49c;
-  font-size: .82rem;
-  letter-spacing: .08em;
+.landing-copy .access-actions {
+  justify-content: flex-start;
 }
 
-.landing-signal span {
+.landing-video {
+  width: 100%;
+  justify-self: stretch;
+}
+
+.landing-video video {
   display: block;
-  padding: 12px 0;
-  border-bottom: 1px solid rgba(106,255,185,.08);
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: min(460px, 58vh);
+  object-fit: contain;
+  border: 1px solid rgba(106,255,185,.16);
+  border-radius: var(--radius);
+  background: #020506;
+  box-shadow: 0 30px 90px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.035);
 }
 
 .landing-section {
@@ -1262,16 +1280,34 @@ html.is-ios textarea {
   font-size: clamp(1.15rem, 2vw, 1.65rem);
 }
 
+.section-lead {
+  max-width: 760px;
+  margin: -6px 0 22px;
+  color: #8fa49c;
+  line-height: 1.58;
+}
+
 .landing-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: clamp(12px, 2vw, 18px);
 }
 
 .landing-grid article {
-  min-height: 150px;
-  padding: 16px 0 0;
-  border-top: 1px solid rgba(106,255,185,.16);
+  min-height: 168px;
+  padding: 16px;
+  border: 1px solid rgba(106,255,185,.12);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(8, 16, 18, .72), rgba(4, 8, 10, .48));
+}
+
+.landing-index {
+  display: block;
+  margin-bottom: 28px;
+  color: #6ad2ff;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .12em;
 }
 
 .landing-grid h3 {
@@ -1289,14 +1325,77 @@ html.is-ios textarea {
 .plain-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 28px;
+  gap: 14px 28px;
   max-width: 940px;
 }
 
 .plain-list p {
   margin: 0;
-  padding-left: 14px;
-  border-left: 2px solid rgba(106,255,185,.22);
+  padding-left: 16px;
+  border-left: 2px solid rgba(106,255,185,.28);
+}
+
+.plain-list strong {
+  color: #dffff0;
+}
+
+.signal-comparison {
+  display: grid;
+}
+
+.comparison-table {
+  display: grid;
+  border: 1px solid rgba(106,255,185,.12);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: rgba(4, 9, 11, .42);
+}
+
+.comparison-head,
+.comparison-row {
+  display: grid;
+  grid-template-columns: minmax(108px, .64fr) minmax(0, 1fr) minmax(0, 1.16fr) minmax(0, 1.08fr);
+}
+
+.comparison-head {
+  background: rgba(106,255,185,.08);
+  color: #dffff0;
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.comparison-head span,
+.comparison-row span {
+  padding: 14px 16px;
+  border-right: 1px solid rgba(106,255,185,.1);
+}
+
+.comparison-head span:last-child,
+.comparison-row span:last-child {
+  border-right: 0;
+}
+
+.comparison-row {
+  border-top: 1px solid rgba(106,255,185,.09);
+  color: #8fa49c;
+  line-height: 1.5;
+}
+
+.comparison-row span:first-child {
+  color: #dffff0;
+  font-weight: 700;
+}
+
+.comparison-row span:last-child {
+  color: #d6f7e8;
+  background: rgba(106,255,185,.035);
+}
+
+.comparison-row span:nth-child(3) {
+  color: #b6cbc3;
+  background: rgba(73,198,255,.026);
 }
 
 .landing-faq {
@@ -1321,7 +1420,17 @@ html.is-ios textarea {
 
 .landing-faq p {
   margin: 10px 0 0;
-  max-width: 760px;
+  max-width: 840px;
+}
+
+.landing-footer {
+  display: flex;
+  justify-content: center;
+  padding: 22px 0 4px;
+  color: #62786f;
+  font-size: .78rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
 }
 
 .checkout-layout {
@@ -1345,6 +1454,12 @@ html.is-ios textarea {
 .checkout-layout .payment-code {
   font-size: .86rem;
   line-height: 1.35;
+}
+
+@media (max-width: 1040px) {
+  .landing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -1378,19 +1493,24 @@ html.is-ios textarea {
   }
 
   .landing-copy {
+    justify-items: center;
     gap: 14px;
+    max-width: 100%;
+    text-align: center;
   }
 
-  .landing-signal {
-    grid-template-columns: 1fr;
-    border-left: 0;
-    border-top: 1px solid rgba(106,255,185,.1);
-    padding: 8px 0 0;
-    font-size: .74rem;
+  .landing-brand {
+    align-items: center;
   }
 
-  .landing-signal span {
-    padding: 8px 0;
+  .landing-copy .access-actions {
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .landing-video video {
+    max-height: none;
+    border-radius: var(--radius-sm);
   }
 
   .landing-grid,
@@ -1406,6 +1526,42 @@ html.is-ios textarea {
     display: grid;
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .comparison-head {
+    display: none;
+  }
+
+  .comparison-row {
+    grid-template-columns: 1fr;
+    padding: 12px 0;
+  }
+
+  .comparison-row span {
+    border-right: 0;
+    padding: 4px 14px;
+  }
+
+  .comparison-row span:first-child {
+    padding-bottom: 8px;
+  }
+
+  .comparison-row span:nth-child(2)::before {
+    content: "Signal limit: ";
+    color: #6ad2ff;
+    font-weight: 700;
+  }
+
+  .comparison-row span:nth-child(3)::before {
+    content: "NullTrace advantage: ";
+    color: #84ffba;
+    font-weight: 700;
+  }
+
+  .comparison-row span:last-child::before {
+    content: "In practice: ";
+    color: #dffff0;
+    font-weight: 700;
   }
 
   .payment-layout.checkout-layout {

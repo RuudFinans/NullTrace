@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <title>NullTrace • Quantum-ready E2EE Chat</title>
-  <meta name="description" content="NullTrace — quantum-ready, RAM-only group chat with hybrid X25519 + ML-KEM, deterministic AEAD, traffic shaping, and zero telemetry.">
+  <title>NullTrace • Free Speech Rooms</title>
+  <meta name="description" content="NullTrace creates encrypted free speech rooms with no accounts, no telemetry, no message history, temporary capsules, and quantum-ready end-to-end encryption.">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#05070a">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#05070a">
@@ -38,50 +38,128 @@
     <section id="accessLanding" class="access-screen access-screen-active access-landing-page">
       <div class="landing-hero">
         <div class="landing-copy">
-          <div class="access-brand">
+          <div class="access-brand landing-brand">
             <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
             <h1>NullTrace</h1>
           </div>
-          <p class="landing-kicker">Private rooms for direct speech.</p>
-          <p class="landing-lead">Send messages without accounts, phone numbers, feeds, ads, or platform profiling. Create a room, share an invite, talk freely, and leave no permanent chat history behind.</p>
+          <p class="landing-lead">Encrypted rooms for free speech. No accounts, no usernames, no telemetry, no permanent chat history.</p>
           <div class="access-actions">
             <button id="payAccessBtn" class="btn primary" type="button">Pay for Access</button>
             <button id="showSigninBtn" class="btn" type="button">Sign In</button>
           </div>
           <p id="accessNotice" class="small muted" role="status"></p>
         </div>
-        <div class="landing-signal" aria-hidden="true">
-          <span>NO TELEMETRY</span>
-          <span>E2EE ROOMS</span>
-          <span>ONE SESSION</span>
+        <div class="landing-video">
+          <video controls preload="metadata" playsinline poster="{{ url_for('static', path='logo.png') }}">
+            <source src="{{ url_for('static', path='nulltrace.mp4') }}" type="video/mp4">
+          </video>
         </div>
       </div>
 
       <div class="landing-section">
         <h2>What it does</h2>
+        <p class="section-lead">NullTrace is not a feed with privacy bolted on. It is infrastructure for people who need to speak freely and leave no platform-owned trail behind.</p>
         <div class="landing-grid">
           <article>
-            <h3>Private conversations</h3>
-            <p>Rooms are created when you need them. No public profile, no social graph, and no inbox designed to keep you hooked.</p>
+            <span class="landing-index">01</span>
+            <h3>Protects free speech</h3>
+            <p>Talk in a room built for the conversation itself, not for distribution, engagement, profiling, or later inspection.</p>
           </article>
           <article>
-            <h3>Speech without audience capture</h3>
-            <p>NullTrace is built for direct human communication, not algorithmic distribution. Say what you mean to the people you invited.</p>
+            <span class="landing-index">02</span>
+            <h3>Controls who enters</h3>
+            <p>Entry happens through a temporary invite capsule. You approve participants instead of publishing to an audience you do not control.</p>
           </article>
           <article>
-            <h3>Keys stay with you</h3>
-            <p>Access is controlled by your user key and restore key. Store them offline; they are your way back in.</p>
+            <span class="landing-index">03</span>
+            <h3>Encrypts before transport</h3>
+            <p>Messages are encrypted in your browser before they move. The server passes encrypted traffic; it is not a place where readable conversations live.</p>
+          </article>
+          <article>
+            <span class="landing-index">04</span>
+            <h3>Leaves less behind</h3>
+            <p>No permanent chat archive, no ad profile, no account timeline. NullTrace is built for conversations that happen, serve their purpose, and disappear.</p>
           </article>
         </div>
       </div>
 
       <div class="landing-section">
         <h2>Why it works</h2>
+        <p class="section-lead">Free speech needs more than a policy promise. NullTrace makes the room technically hard to abuse: approve entry, encrypt locally, rotate keys, store no readable history.</p>
         <div class="plain-list">
-          <p>Messages are encrypted before they leave your browser.</p>
-          <p>Room invites are temporary and only useful to the person you share them with.</p>
-          <p>Sessions are limited so one access key cannot quietly run everywhere at once.</p>
-          <p>Traffic is padded and shaped so conversations reveal less from packet size alone.</p>
+          <p><strong>Encrypt first.</strong> End-to-end encryption starts locally, before a message leaves your device.</p>
+          <p><strong>Hybrid keys.</strong> X25519 and ML-KEM combine classical speed with post-quantum resilience.</p>
+          <p><strong>Short-lived entry.</strong> Invite capsules are signed, time-limited, and useless once they expire.</p>
+          <p><strong>Approved members.</strong> Participants enter through verified handshakes and fresh room keying.</p>
+          <p><strong>Less traffic leakage.</strong> Padding and encrypted chaff reduce what packet size alone can reveal.</p>
+          <p><strong>One active session.</strong> Access is limited so quiet account sharing and invisible parallel use get harder.</p>
+        </div>
+      </div>
+
+      <div class="landing-section signal-comparison">
+        <h2>Signal Comparison</h2>
+        <p class="section-lead">In modern life, Signal should be the baseline for normal conversations with friends and family. Technology is too advanced, too connected, and too observable for ordinary messaging to be casual anymore. But when something must not become identity, notification, backup, device history, or future evidence, it belongs in NullTrace.</p>
+        <div class="comparison-table" role="table" aria-label="NullTrace compared with Signal">
+          <div class="comparison-head" role="row">
+            <span role="columnheader">Area</span>
+            <span role="columnheader">Signal limit</span>
+            <span role="columnheader">NullTrace advantage</span>
+            <span role="columnheader">In practice</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Identity</span>
+            <span role="cell">Starts from a phone-number account, with usernames added as a contact layer.</span>
+            <span role="cell">No phone number, no username, no profile, no account identity. Access is controlled by keypairs.</span>
+            <span role="cell">A conversation is not attached to a public handle, SIM card, address book, or reusable social identity.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Room control</span>
+            <span role="cell">Groups live inside a persistent messenger account and contact graph.</span>
+            <span role="cell">Rooms are created on demand with signed, temporary invite capsules and explicit approval.</span>
+            <span role="cell">A conversation is a controlled event, not another permanent channel attached to your identity.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Encryption model</span>
+            <span role="cell">Classical messaging encryption built for broad consumer chat.</span>
+            <span role="cell">Hybrid X25519 + ML-KEM handshakes, signed transcripts, epochs, and sealed group-key distribution.</span>
+            <span role="cell">NullTrace pushes harder than standard messaging: it protects the room now and reduces future cryptographic regret.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Message isolation</span>
+            <span role="cell">Built as a persistent messenger where conversation state lives around long-running chats.</span>
+            <span role="cell">Every message is its own sealed AEAD packet with sender, sequence, epoch, nonce, and authenticated metadata.</span>
+            <span role="cell">A previous message cannot be reused to read, replay, or predict the next one.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Membership secrecy</span>
+            <span role="cell">Group history belongs to the device history and group conversation model.</span>
+            <span role="cell">Room keys rotate by epoch when membership changes, and new members only receive the current room key.</span>
+            <span role="cell">Someone approved later does not get the old room key and cannot decrypt earlier messages.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Anti-forensics</span>
+            <span role="cell">Device message history, app state, and notifications can leave OS-level residue depending on settings.</span>
+            <span role="cell">No push notifications, no inbox archive, no platform notification previews, burn timers, deadman, one-tap wipe.</span>
+            <span role="cell">There is far less for a phone extraction, notification log, backup, or casual inspection to recover.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Server breach</span>
+            <span role="cell">A messenger service still has account, device, delivery, and abuse-prevention structure around users.</span>
+            <span role="cell">NullTrace never receives message keys and stores no readable chat history. Relay memory is encrypted and short-lived.</span>
+            <span role="cell">A breached server sees encrypted room traffic and noise, not plaintext or key material that can regenerate messages.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Server visibility</span>
+            <span role="cell">A delivery service for known accounts, devices, and contactable identities.</span>
+            <span role="cell">A pass-through for encrypted room traffic with no readable room archive and no account graph.</span>
+            <span role="cell">The server has less useful structure to preserve, analyze, or hand over.</span>
+          </div>
+          <div class="comparison-row" role="row">
+            <span role="cell">Free speech fit</span>
+            <span role="cell">The minimum responsible choice for everyday private messaging.</span>
+            <span role="cell">The correct place for conversations that must not leak through accounts, metadata, notifications, or retained history.</span>
+            <span role="cell">For absolute free speech, NullTrace is the stronger and cleaner threat model.</span>
+          </div>
         </div>
       </div>
 
@@ -89,21 +167,25 @@
         <h2>FAQ</h2>
         <details>
           <summary>Do I need an account?</summary>
-          <p>No. Access uses private keys instead of username/password accounts.</p>
+          <p>No. NullTrace does not need usernames, phone numbers, email addresses, or a public profile. Access is controlled by your user key and restore key, so the product can stay focused on rooms and encryption instead of identity collection.</p>
         </details>
         <details>
           <summary>Can NullTrace read my messages?</summary>
-          <p>The app is designed so message content is encrypted in the browser before transport.</p>
+          <p>No readable chat history is stored for NullTrace to browse later. Message content is encrypted before transport, sent as protected room traffic, and only the approved participants in that room are meant to decrypt it.</p>
         </details>
         <details>
           <summary>What happens if I lose my keys?</summary>
-          <p>You lose access. Save both keys somewhere offline before continuing.</p>
+          <p>You can lose access. Save both keys somewhere offline before continuing. If it happens, contact us and we can look at what is still possible, but the system is intentionally designed so keys matter.</p>
         </details>
         <details>
-          <summary>Is this for large public groups?</summary>
-          <p>No. It is built for private rooms and deliberate invites, not mass broadcast.</p>
+          <summary>How many people can be in a group conversation?</summary>
+          <p>Invite as many people as the room needs. Every approved participant is brought into the encrypted session through the room flow, with membership changes driving fresh key material instead of turning the conversation into a public channel.</p>
         </details>
       </div>
+
+      <footer class="landing-footer">
+        <span>NullTrace 2026</span>
+      </footer>
     </section>
 
     <section id="planScreen" class="access-screen">
