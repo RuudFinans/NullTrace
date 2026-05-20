@@ -35,17 +35,75 @@
 </head>
 <body>
   <main id="accessShell" class="access-shell" aria-live="polite">
-    <section id="accessLanding" class="access-screen access-screen-active">
-      <div class="access-brand">
-        <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
-        <h1>NullTrace</h1>
+    <section id="accessLanding" class="access-screen access-screen-active access-landing-page">
+      <div class="landing-hero">
+        <div class="landing-copy">
+          <div class="access-brand">
+            <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
+            <h1>NullTrace</h1>
+          </div>
+          <p class="landing-kicker">Private rooms for direct speech.</p>
+          <p class="landing-lead">Send messages without accounts, phone numbers, feeds, ads, or platform profiling. Create a room, share an invite, talk freely, and leave no permanent chat history behind.</p>
+          <div class="access-actions">
+            <button id="payAccessBtn" class="btn primary" type="button">Pay for Access</button>
+            <button id="showSigninBtn" class="btn" type="button">Sign In</button>
+          </div>
+          <p id="accessNotice" class="small muted" role="status"></p>
+        </div>
+        <div class="landing-signal" aria-hidden="true">
+          <span>NO TELEMETRY</span>
+          <span>E2EE ROOMS</span>
+          <span>ONE SESSION</span>
+        </div>
       </div>
-      <p class="access-intro">Private encrypted messaging. Access is activated by payment. Store your access keys safely.</p>
-      <div class="access-actions">
-        <button id="payAccessBtn" class="btn primary" type="button">Pay for Access</button>
-        <button id="showSigninBtn" class="btn" type="button">Sign In</button>
+
+      <div class="landing-section">
+        <h2>What it does</h2>
+        <div class="landing-grid">
+          <article>
+            <h3>Private conversations</h3>
+            <p>Rooms are created when you need them. No public profile, no social graph, and no inbox designed to keep you hooked.</p>
+          </article>
+          <article>
+            <h3>Speech without audience capture</h3>
+            <p>NullTrace is built for direct human communication, not algorithmic distribution. Say what you mean to the people you invited.</p>
+          </article>
+          <article>
+            <h3>Keys stay with you</h3>
+            <p>Access is controlled by your user key and restore key. Store them offline; they are your way back in.</p>
+          </article>
+        </div>
       </div>
-      <p id="accessNotice" class="small muted" role="status"></p>
+
+      <div class="landing-section">
+        <h2>Why it works</h2>
+        <div class="plain-list">
+          <p>Messages are encrypted before they leave your browser.</p>
+          <p>Room invites are temporary and only useful to the person you share them with.</p>
+          <p>Sessions are limited so one access key cannot quietly run everywhere at once.</p>
+          <p>Traffic is padded and shaped so conversations reveal less from packet size alone.</p>
+        </div>
+      </div>
+
+      <div class="landing-section landing-faq">
+        <h2>FAQ</h2>
+        <details>
+          <summary>Do I need an account?</summary>
+          <p>No. Access uses private keys instead of username/password accounts.</p>
+        </details>
+        <details>
+          <summary>Can NullTrace read my messages?</summary>
+          <p>The app is designed so message content is encrypted in the browser before transport.</p>
+        </details>
+        <details>
+          <summary>What happens if I lose my keys?</summary>
+          <p>You lose access. Save both keys somewhere offline before continuing.</p>
+        </details>
+        <details>
+          <summary>Is this for large public groups?</summary>
+          <p>No. It is built for private rooms and deliberate invites, not mass broadcast.</p>
+        </details>
+      </div>
     </section>
 
     <section id="planScreen" class="access-screen">
@@ -61,7 +119,7 @@
         <button class="btn ghost access-back" data-access-back="plans" type="button">Back</button>
         <h2>Payment</h2>
       </div>
-      <div class="payment-layout">
+      <div class="payment-layout checkout-layout">
         <div id="qrCode" class="qr-code" aria-label="Deposit address QR code"></div>
         <div class="payment-details">
           <p class="muted small">Plan</p>
