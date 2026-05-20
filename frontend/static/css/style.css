@@ -133,6 +133,14 @@ code, kbd {
   margin: -1px;
 }
 
+body.access-unlocked #accessShell {
+  display: none !important;
+}
+
+body.access-unlocked #appShell {
+  display: block !important;
+}
+
 .container {
   max-width: 1160px;
   margin: 0 auto;
@@ -311,8 +319,7 @@ textarea {
   transition: border-color .15s, box-shadow .15s, background-color .15s;
 }
 .room-input,
-.compose-input,
-#accessInput {
+.compose-input {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 input::placeholder,
@@ -881,6 +888,37 @@ button:focus-visible,
     display: none;
   }
 }
+@media (max-width: 720px) {
+  .access-shell {
+    height: var(--app-height, 100dvh);
+    overflow: auto;
+    place-items: start center;
+  }
+  .access-screen {
+    margin: 0 auto;
+  }
+  .payment-layout {
+    grid-template-columns: 1fr;
+  }
+  .qr-code {
+    width: min(250px, 100%);
+    justify-self: center;
+  }
+  .access-actions,
+  .copy-row {
+    grid-template-columns: 1fr;
+  }
+  .access-actions {
+    display: grid;
+  }
+  .access-actions .btn,
+  .copy-row .btn {
+    width: 100%;
+  }
+  .desktop-only {
+    display: none !important;
+  }
+}
 html.is-standalone .container {
   max-width: 100%;
 }
@@ -890,6 +928,251 @@ html.is-standalone .topbar {
 html.is-ios input,
 html.is-ios textarea {
   -webkit-user-select: text;
+}
+
+.access-shell {
+  min-height: var(--app-height, 100dvh);
+  display: grid;
+  place-items: center;
+  padding:
+    calc(18px + var(--safe-top))
+    max(14px, var(--safe-right))
+    calc(18px + var(--safe-bottom))
+    max(14px, var(--safe-left));
+}
+.access-screen {
+  display: none;
+  width: min(680px, 100%);
+  background: linear-gradient(180deg, rgba(14, 22, 27, .94), rgba(7, 11, 15, .94));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: clamp(16px, 4vw, 28px);
+}
+.access-screen-active {
+  display: grid;
+  gap: 16px;
+}
+.access-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.access-brand h1 {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.access-logo {
+  width: 46px;
+  height: 46px;
+  border-radius: 8px;
+  border: 1px solid rgba(106,255,185,.22);
+}
+.access-intro {
+  max-width: 520px;
+  color: #a8bbb4;
+  line-height: 1.55;
+}
+.access-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.access-actions.compact {
+  gap: 8px;
+}
+.access-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.access-head h2 {
+  margin: 0;
+}
+.access-back {
+  min-width: 78px;
+}
+.plan-list {
+  display: grid;
+  gap: 10px;
+}
+.plan-option {
+  width: 100%;
+  height: auto;
+  min-height: 62px;
+  display: flex;
+  justify-content: space-between;
+  border-radius: var(--radius-sm);
+  background: rgba(7, 13, 16, .78);
+  color: var(--txt);
+  border-color: rgba(106,255,185,.18);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  text-align: left;
+}
+.plan-option strong {
+  color: var(--accent);
+}
+.payment-layout {
+  display: grid;
+  grid-template-columns: minmax(188px, 230px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.qr-code {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 10px;
+  display: grid;
+  place-items: center;
+}
+.qr-code svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.payment-details {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.payment-value {
+  margin: 0 0 4px;
+  color: #f2fff8;
+  font-weight: 600;
+}
+.copy-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+.payment-code {
+  display: block;
+  min-width: 0;
+  padding: .7rem .75rem;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+}
+.payment-status {
+  margin: 4px 0 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+#devnetFundBtn {
+  justify-self: start;
+  margin-top: 2px;
+}
+.warning-text {
+  margin: 0;
+  color: #ffd5dc;
+  border: 1px solid rgba(255,77,109,.24);
+  background: rgba(80, 12, 24, .2);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+.key-stack {
+  display: grid;
+  gap: 12px;
+}
+.key-box {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(106,255,185,.12);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: rgba(5, 10, 13, .58);
+}
+.key-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #dffff0;
+  font-weight: 600;
+}
+.key-field {
+  display: block;
+  min-height: 48px;
+  padding: 10px;
+  font-size: 1rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+}
+.key-field.is-hidden {
+  letter-spacing: .04em;
+}
+.confirm-stack {
+  display: grid;
+  gap: 8px;
+  color: #b8cbc4;
+}
+.confirm-stack label {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.confirm-stack input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.btn.full {
+  width: 100%;
+}
+.access-textarea {
+  min-height: 88px;
+  resize: vertical;
+  overflow-wrap: anywhere;
+}
+.restore-panel {
+  display: grid;
+  gap: 8px;
+}
+.backup-card {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: #f7fbf8;
+  color: #06100b;
+  padding: max(18px, var(--safe-top)) max(14px, var(--safe-right)) max(18px, var(--safe-bottom)) max(14px, var(--safe-left));
+  overflow: auto;
+}
+.backup-card-inner {
+  min-height: calc(100dvh - 36px);
+  display: grid;
+  align-content: center;
+  gap: 14px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.backup-card h2 {
+  color: #06100b;
+  font-size: clamp(1.4rem, 4vw, 2.4rem);
+}
+.backup-card p {
+  margin: 12px 0 0;
+  color: #314139;
+  font-weight: 600;
+}
+.backup-card code {
+  display: block;
+  color: #06100b;
+  background: #fff;
+  border: 2px solid #0b2116;
+  border-radius: 8px;
+  padding: 12px;
+  font-size: clamp(.9rem, 2.6vw, 1.15rem);
+  overflow-wrap: anywhere;
+}
+.top-logout {
+  height: 30px;
+  padding-inline: 10px;
+  font-size: .74rem;
 }
 
 .header-center { display: none; }

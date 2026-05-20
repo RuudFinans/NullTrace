@@ -54,58 +54,10 @@ const J=$("join"), C=$("capsuleBtn"), Ibtn=$("inviteBtn"), R=$("room"),
       disconnectBtn=$("disconnectBtn"),
       P_CANCEL=$("pasteCancelBtn");          // ← NEW: no inline onclick
 
+J.disabled = true;
+C.disabled = true;
 Ibtn.disabled = true;
 
-/* ───────────────── Access code gate (overlay + blur) ───────────────── */
-const accessDlg = $("accessDlg");
-const accessInput = $("accessInput");
-const accessOk = $("accessOk");
-const accessErr = $("accessErr");
-
-const ACCESS_REQUIRED = window.NULLTRACE_ACCESS_REQUIRED !== false;
-let ACCESS_CODE = null; // holdes kun i minne – ny kode kreves ved refresh
-
-function setBackdropBlur(on) {
-  const mainEl = document.querySelector("main.container");
-  if (!mainEl) return;
-  if (on) {
-    mainEl.style.filter = "blur(6px)";
-    // inert hindrer fokus/klikk bak dialogen (bred støtte i moderne browsere)
-    mainEl.setAttribute("inert", "");
-  } else {
-    mainEl.style.filter = "";
-    mainEl.removeAttribute("inert");
-  }
-}
-
-function showAccess(reason) {
-  if (reason) accessErr.textContent = reason;
-  else accessErr.textContent = "";
-  setBackdropBlur(true);
-  if (!accessDlg.open) accessDlg.showModal();
-  accessInput.focus();
-}
-
-function hideAccess() {
-  accessErr.textContent = "";
-  if (accessDlg.open) accessDlg.close();
-  setBackdropBlur(false);
-}
-
-// Sørg for blur hvis dialogen allerede er "open" fra HTML (første load)
-if (accessDlg && accessDlg.open) setBackdropBlur(true);
-accessDlg?.addEventListener("close", () => setBackdropBlur(false));
-
-accessOk?.addEventListener("click", () => {
-  const v = (accessInput?.value || "").trim();
-  if (ACCESS_REQUIRED && v.length < 20) {
-    accessErr.textContent = "Access code looks too short.";
-    accessInput.focus();
-    return;
-  }
-  ACCESS_CODE = ACCESS_REQUIRED ? v : null;
-  hideAccess();
-});
 /* ──────────────────────────────────────────────────────────────────── */
 
 
@@ -124,6 +76,21 @@ let role=null;
 let capsuleInfo=null;
 let capsuleRaw=null;
 let nextCid = null; // ← NEW: pre-generert ID som vises i confirm og brukes ved join
+
+let chatModuleReady = false;
+
+function accessIsUnlocked(){
+  const shell = $("appShell");
+  return document.body.classList.contains("access-unlocked") || (shell && !shell.hidden);
+}
+
+function updateLaunchButtons(){
+  const enabled = chatModuleReady && accessIsUnlocked();
+  J.disabled = !enabled;
+  C.disabled = !enabled;
+}
+
+window.addEventListener("nulltrace:access-unlocked", updateLaunchButtons);
 
 // Host-side rekey throttle
 let lastRekeyAt = 0;
@@ -204,16 +171,11 @@ function resetReconnectBackoff(){
 }
 async function getRoomToken(roomId){
   // Krev kode før vi forsøker
-  if (ACCESS_REQUIRED && !ACCESS_CODE) {
-    showAccess("Enter your access code to continue.");
-    throw new Error("Missing access code");
-  }
-
   const headers = { "Content-Type": "application/json" };
-  if (ACCESS_REQUIRED) headers["X-Access-Code"] = ACCESS_CODE;
 
   const res = await fetch("/api/room-token", {
     method: "POST",
+    credentials: "same-origin",
     headers,
     body: JSON.stringify({ room_id: roomId })
   });
@@ -221,7 +183,7 @@ async function getRoomToken(roomId){
   if (!res.ok) {
     // Vis gode feilmeldinger og re-åpne gate ved 401
     if (res.status === 401) {
-      showAccess("Invalid or missing access code. Please try again.");
+      addMsg("Sign in to continue.", "error");
     } else if (res.status === 403) {
       addMsg("⛔ Forbidden (bad origin).", "error");
     } else if (res.status === 429) {
@@ -417,8 +379,6 @@ function readyUI(){
 
 /* Host start */
 J.onclick=()=>{
-  if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required to start."); return; } // ← NEW
-
   if(ws){
     if(!confirm("Leave the current chat and start new?")) return;
     wipeSession();
@@ -536,7 +496,6 @@ CONF_JOIN.onclick=async ()=>{
   capsuleInfo=info;
   CONFIRMDLG.close();
 
-  if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required to join."); return; } // ← NEW
 
   // Lås ID-en som ble vist i dialogen, før ev. wipe
   if (nextCid) { CID = nextCid; nextCid = null; }
@@ -585,7 +544,6 @@ function scheduleGkRetry(hostCid, attempt=1, delay=GK_REQ_DELAY_MS){
 
 /* WebSocket */
 async function startChat({resume=false}={}){
-  if (ACCESS_REQUIRED && !ACCESS_CODE) { showAccess("Access code required."); return; } // ← NEW
   if(ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)) return;
   if(ws) ws=null;
   if(!R.value.trim()) R.value=genUUID().slice(0,12);
@@ -737,3 +695,8 @@ IN.addEventListener("keydown", e=> e.key==="Enter" && S.click());
 IN.addEventListener("focus", ()=>{
   setTimeout(()=>{ CH.scrollTop=CH.scrollHeight; }, 220);
 });
+
+chatModuleReady = true;
+window.NullTraceChatReady = true;
+updateLaunchButtons();
+window.dispatchEvent(new CustomEvent("nulltrace:chat-ready"));

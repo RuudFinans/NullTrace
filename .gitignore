@@ -1,12 +1,31 @@
 .env
 .env.*
-!.env.example
+.env.example
+
+# Local tools / one-off test files
+keygen.py
+loginadmintest
+loginadmintest*
+*admintest*
+*_test_local.*
+*.local
+*.local.*
 
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
 
 .venv/
 node_modules/
 
 .idea/
+.vscode/

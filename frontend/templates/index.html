@@ -17,12 +17,14 @@
   <link rel="icon" href="{{ url_for('static', path='logo.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', path='logo.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+  <link rel="modulepreload" href="{{ url_for('static', path='libs/libsodium-wrappers.bundle.js') }}?v={{ uuid }}">
+  <link rel="modulepreload" href="{{ url_for('static', path='libs/mlkem.bundle.js') }}?v={{ uuid }}">
 
   <script type="importmap" nonce="{{ request.state.csp_nonce }}">
   {
     "imports": {
-      "libsodium-wrappers": "https://esm.sh/libsodium-wrappers@0.7.15?bundle",
-      "mlkem":              "https://esm.sh/mlkem@2.3.1?bundle",
+      "libsodium-wrappers": "/static/libs/libsodium-wrappers.bundle.js?v={{ uuid }}",
+      "mlkem":              "/static/libs/mlkem.bundle.js?v={{ uuid }}",
       "handshake":          "/static/js/modules/handshake.js?v={{ uuid }}",
       "group":              "/static/js/modules/group.js?v={{ uuid }}",
       "mls":                "/static/js/modules/mls.js?v={{ uuid }}",
@@ -32,7 +34,122 @@
   </script>
 </head>
 <body>
-  <main class="container">
+  <main id="accessShell" class="access-shell" aria-live="polite">
+    <section id="accessLanding" class="access-screen access-screen-active">
+      <div class="access-brand">
+        <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
+        <h1>NullTrace</h1>
+      </div>
+      <p class="access-intro">Private encrypted messaging. Access is activated by payment. Store your access keys safely.</p>
+      <div class="access-actions">
+        <button id="payAccessBtn" class="btn primary" type="button">Pay for Access</button>
+        <button id="showSigninBtn" class="btn" type="button">Sign In</button>
+      </div>
+      <p id="accessNotice" class="small muted" role="status"></p>
+    </section>
+
+    <section id="planScreen" class="access-screen">
+      <div class="access-head">
+        <button class="btn ghost access-back" data-access-back="landing" type="button">Back</button>
+        <h2>Choose access</h2>
+      </div>
+      <div id="planList" class="plan-list"></div>
+    </section>
+
+    <section id="paymentScreen" class="access-screen">
+      <div class="access-head">
+        <button class="btn ghost access-back" data-access-back="plans" type="button">Back</button>
+        <h2>Payment</h2>
+      </div>
+      <div class="payment-layout">
+        <div id="qrCode" class="qr-code" aria-label="Deposit address QR code"></div>
+        <div class="payment-details">
+          <p class="muted small">Plan</p>
+          <p id="paymentPlan" class="payment-value"></p>
+          <p class="muted small">Exact SOL amount</p>
+          <div class="copy-row">
+            <code id="paymentAmount" class="payment-code"></code>
+            <button id="copyAmountBtn" class="btn" type="button">Copy</button>
+          </div>
+          <p class="muted small">Deposit address</p>
+          <div class="copy-row">
+            <code id="depositAddress" class="payment-code"></code>
+            <button id="copyAddressBtn" class="btn" type="button">Copy</button>
+          </div>
+          <p id="paymentCountdown" class="small muted"></p>
+          <p id="paymentStatus" class="payment-status">Waiting for payment...</p>
+          <button id="devnetFundBtn" class="btn" type="button" hidden>Send Devnet SOL</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="successScreen" class="access-screen">
+      <div class="access-head">
+        <h2>Save your access keys</h2>
+      </div>
+      <p class="warning-text">Anyone with these keys can access or reset your NullTrace access. Store them offline. If your restore key is exposed, someone can revoke your current session.</p>
+      <div class="key-stack">
+        <div class="key-box">
+          <div class="key-label">
+            <span>User key</span>
+            <button id="toggleUserKeyBtn" class="btn ghost" type="button">Reveal</button>
+          </div>
+          <code id="userKeyField" class="key-field is-hidden"></code>
+          <button id="copyUserKeyBtn" class="btn" type="button">Copy</button>
+        </div>
+        <div class="key-box">
+          <div class="key-label">
+            <span>Restore key</span>
+            <button id="toggleRestoreKeyBtn" class="btn ghost" type="button">Reveal</button>
+          </div>
+          <code id="restoreKeyField" class="key-field is-hidden"></code>
+          <button id="copyRestoreKeyBtn" class="btn" type="button">Copy</button>
+        </div>
+      </div>
+      <div class="access-actions compact">
+        <button id="copyBothKeysBtn" class="btn" type="button">Copy both keys</button>
+        <button id="showBackupCardBtn" class="btn" type="button">Show as backup card</button>
+        <button id="shareKeysBtn" class="btn" type="button" hidden>Share/Save</button>
+        <button id="downloadBackupBtn" class="btn ghost desktop-only" type="button" hidden>Download backup file</button>
+      </div>
+      <div class="confirm-stack">
+        <label><input id="savedUserKeyCheck" type="checkbox"> I saved my user key.</label>
+        <label><input id="savedRestoreKeyCheck" type="checkbox"> I saved my restore key.</label>
+        <label><input id="understandKeysCheck" type="checkbox"> I understand anyone with these keys can access or reset my access.</label>
+      </div>
+      <button id="continueToAppBtn" class="btn primary full" type="button" disabled>Continue to NullTrace</button>
+    </section>
+
+    <section id="signinScreen" class="access-screen">
+      <div class="access-head">
+        <button class="btn ghost access-back" data-access-back="landing" type="button">Back</button>
+        <h2>Sign In</h2>
+      </div>
+      <label for="signinUserKey" class="visually-hidden">User key</label>
+      <textarea id="signinUserKey" class="mono access-textarea" rows="3" autocomplete="off" spellcheck="false" placeholder="Paste nt_user_..."></textarea>
+      <div id="restorePanel" class="restore-panel" hidden>
+        <p class="muted small">This access is currently active somewhere else. Enter your restore key to move access here. The old session will be logged out.</p>
+        <label for="signinRestoreKey" class="visually-hidden">Restore key</label>
+        <textarea id="signinRestoreKey" class="mono access-textarea" rows="3" autocomplete="off" spellcheck="false" placeholder="Paste nt_restore_..."></textarea>
+      </div>
+      <p id="signinStatus" class="small muted" role="status"></p>
+      <button id="signinBtn" class="btn primary full" type="button">Sign In</button>
+    </section>
+  </main>
+
+  <section id="backupCard" class="backup-card" hidden>
+    <div class="backup-card-inner">
+      <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
+      <h2>NullTrace Access Keys</h2>
+      <p>User key</p>
+      <code id="backupUserKey"></code>
+      <p>Restore key</p>
+      <code id="backupRestoreKey"></code>
+      <button id="closeBackupCardBtn" class="btn primary" type="button">Close</button>
+    </div>
+  </section>
+
+  <main id="appShell" class="container" hidden>
 
     <header class="topbar" role="banner">
       <div class="brand">
@@ -47,6 +164,7 @@
         <span class="badge">PQ-Hybrid</span>
         <span class="badge">No Logs</span>
         <span id="status" class="badge badge-live" aria-live="polite"></span>
+        <button id="accessLogoutBtn" class="btn ghost top-logout" type="button">Logout</button>
       </div>
     </header>
 
@@ -65,8 +183,8 @@
             spellcheck="false"
             placeholder="Secure Channel">
           <div class="actions">
-            <button id="join" class="btn primary" type="button">Start</button>
-            <button id="capsuleBtn" class="btn" type="button">Join</button>
+            <button id="join" class="btn primary" type="button" disabled>Start</button>
+            <button id="capsuleBtn" class="btn" type="button" disabled>Join</button>
             <button id="inviteBtn" class="btn ghost" type="button" disabled>Invite</button>
           </div>
         </div>
@@ -230,45 +348,14 @@
     </div>
   </dialog>
 
-<dialog id="accessDlg" class="dlg" aria-labelledby="access-title" aria-describedby="access-desc">
-  <h3 id="access-title">Welcome to NullTrace</h3>
-  <p id="access-desc" class="muted small">
-    {% if access_required %}
-    Access is currently limited. Enter your access code to continue.
-    {% else %}
-    Open access — no code required.
-    {% endif %}
-  </p>
-
-  <label for="accessInput" class="visually-hidden">Access code</label>
-  <input
-    id="accessInput"
-    class="mono"
-    type="{{ 'password' if access_required else 'hidden' }}"
-    value=""
-    inputmode="latin"
-    autocomplete="off"
-    spellcheck="false"
-    placeholder="{{ 'Enter your access code...' if access_required else '' }}">
-
-  <p id="accessErr" class="small muted" role="status" aria-live="polite" style="min-height:1.2em"></p>
-
-  <div class="dlg-buttons">
-    <button id="accessOk" class="btn primary" type="button">Continue</button>
-  </div>
-</dialog>
-
-
   <noscript>
     <p class="muted small" style="text-align:center;margin:1rem 0;">
       JavaScript is required for end-to-end encryption.
     </p>
   </noscript>
 
-  <script nonce="{{ request.state.csp_nonce }}">
-    window.NULLTRACE_ACCESS_REQUIRED = {{ access_required | tojson }};
-  </script>
   <script src="{{ url_for('static', path='js/pwa.js') }}?v={{ uuid }}" defer></script>
+  <script type="module" src="{{ url_for('static', path='js/access.js') }}?v={{ uuid }}"></script>
   <script type="module" src="{{ url_for('static', path='js/app.js') }}?v={{ uuid }}"></script>
 </body>
 </html>

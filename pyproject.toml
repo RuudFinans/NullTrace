@@ -2,7 +2,7 @@
 name = "nulltrace"
 version = "0.1.0"
 description = "Post‑quantum + Signal‑style messaging playground"
-authors = ["Ruben <you@example.com>"]
+authors = ["secret <you@example.com>"]
 packages = [{ include = "backend" }]
 
 [tool.poetry.dependencies]
@@ -14,6 +14,11 @@ PyNaCl = "^1.5"
 oqs = "^0.10"               # Kyber via liboqs python‑bindings
 DoubleRatchet = "^1.1"
 typing-extensions = "*"
+cryptography = "^46.0"
+python-dotenv = "^1.1"
+solana = "0.32.0"
+solders = "0.20.0"
+psycopg = {extras = ["binary"], version = "^3.2"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

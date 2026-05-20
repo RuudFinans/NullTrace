@@ -39,6 +39,7 @@
     "is-reference": "^1.2.1",
     "is-regex": "^1.2.1",
     "is-typed-array": "^1.1.15",
+    "libsodium-wrappers": "^0.7.15",
     "long": "^5.3.2",
     "magic-string": "^0.30.17",
     "math-intrinsics": "^1.1.0",
@@ -67,6 +68,7 @@
     "esbuild": "^0.25.3"
   },
   "scripts": {
+    "build:libs": "esbuild frontend/static/libs-src/libsodium-entry.js --bundle --format=esm --platform=browser --outfile=frontend/static/libs/libsodium-wrappers.bundle.js && esbuild frontend/static/libs-src/mlkem-entry.js --bundle --format=esm --platform=browser --outfile=frontend/static/libs/mlkem.bundle.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

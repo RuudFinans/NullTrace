@@ -1,527 +1,740 @@
-"""
-utils.wallet – deposit-poller · withdraw-poller · sweep · send_sol · pris-helper
-"""
-
 from __future__ import annotations
+
+import asyncio
+import json
 import logging
-logging.basicConfig(level=logging.INFO)
-import os, asyncio, time, json, hmac, hashlib
-import threading
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+import math
+import os
+import time
+import urllib.parse
+import urllib.request
+from calendar import monthrange
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_CEILING
+from typing import Any, Callable
 
-import aiohttp
-from solders.keypair      import Keypair
-from solders.pubkey       import Pubkey
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.types     import Commitment
-from solana.transaction   import Transaction
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.system_program import TransferParams, transfer
-from solana.exceptions    import SolanaRpcException
+from solana.exceptions import SolanaRpcException
+from solana.rpc.async_api import AsyncClient
+from solana.rpc.commitment import Commitment
+from solana.rpc.types import TxOpts
+from solana.transaction import Transaction
 
-from .. import socketio
-from ..database import db_session
-from ..models    import Deposit, User, Withdrawal
-
-# NYTT: affiliate/rollover helpers
-from .affiliate import (
-    AFFILIATE_BONUS_PCT,
-    skim_to_affiliate_wallet,
+from . import access_db
+from .access_security import (
+    AccessConfigError,
+    decrypt_deposit_secret,
+    encrypt_claim_payload,
+    encrypt_deposit_secret,
+    env_bool,
+    env_float,
+    env_int,
+    generate_restore_key,
+    generate_user_key,
+    hash_access_key,
+    hash_restore_key,
+    isoformat,
+    parse_datetime,
+    safe_error,
+    utcnow,
 )
-from .rollover import create_rollover_bucket
 
-try:
-    # optional imports – nye modeller
-    from ..models import (
-        AffiliateCode, AffiliateSelection, AffiliatePayout, BonusTierPayout
+
+log = logging.getLogger("nulltrace.wallet")
+
+LAMPORTS_PER_SOL = 1_000_000_000
+
+PLAN_CONFIG = {
+    "1m": {"label": "1 month", "price_env": "NULLTRACE_PRICE_1M_USD", "months": 1, "default_usd": 100},
+    "6m": {"label": "6 months", "price_env": "NULLTRACE_PRICE_6M_USD", "months": 6, "default_usd": 400},
+    "1y": {"label": "1 year", "price_env": "NULLTRACE_PRICE_1Y_USD", "months": 12, "default_usd": 600},
+}
+
+_PRICE_CACHE: dict[str, float | None] = {"ts": 0.0, "usd": None}
+
+
+class DevnetFundingError(RuntimeError):
+    pass
+
+
+def use_devnet() -> bool:
+    return env_bool("SOL_USE_DEVNET", True)
+
+
+def solana_rpc_url() -> str:
+    return os.getenv(
+        "SOLANA_RPC_DEV" if use_devnet() else "SOLANA_RPC_MAIN",
+        "https://api.devnet.solana.com" if use_devnet() else "https://api.mainnet-beta.solana.com",
     )
-except Exception:
-    AffiliateCode = AffiliateSelection = AffiliatePayout = BonusTierPayout = None
-
-try:
-    from app.gdrive_backup import export_deposits_and_keys
-except ImportError:
-    from ..gdrive_backup import export_deposits_and_keys
-
-# ───────── CONFIG ────────────────────────────────────────────
-USE_DEVNET       = os.getenv("SOL_USE_DEVNET", "1") == "1"
-RPC_DEV = os.getenv("SOLANA_RPC_DEV", "https://api.devnet.solana.com")
-RPC_MAIN = os.getenv("SOLANA_RPC_MAIN", "https://api.mainnet-beta.solana.com")
-SOLANA_RPC = RPC_DEV if USE_DEVNET else RPC_MAIN
-print("▶ Bruker MAINNET" if not USE_DEVNET else "▶ Bruker DEVNET")
-print("▶ SOLANA_RPC =", SOLANA_RPC)
-
-COLD_STORAGE_PUB = os.getenv("COLD_STORAGE_PUB")            # må være satt i .env
-HOT_PRIV_HEX     = os.getenv("HOT_PRIV_HEX")                # 128 hex-tegn (64 bytes)
-print("▶ HOT_PRIV_HEX len =", len(HOT_PRIV_HEX) if HOT_PRIV_HEX else 0)
-
-LAMPORT          = 1_000_000_000
-SWEEP_AFTER_SEC  = int(os.getenv("SWEEP_AFTER_SEC",  "60"))
-SWEEP_POLL_SECONDS = int(os.getenv("SWEEP_POLL_SECONDS", "60"))
-PENDING_TTL_SEC  = int(os.getenv("PENDING_TTL_SEC", "700"))
-WITHDRAW_FEE_PCT = float(os.getenv("WITHDRAW_FEE_PCT", "2.5"))  # prosent, eks. 2.5
-
-# NYTT: deposit bonus tiers (%), 0 = av
-DEPOSITBONUS25 = float(os.getenv("DEPOSITBONUS25", "0") or 0)
-DEPOSITBONUS50 = float(os.getenv("DEPOSITBONUS50", "0") or 0)
-DEPOSITBONUS100 = float(os.getenv("DEPOSITBONUS100", "0") or 0)
-
-# dump-mapper
-dump_dir = Path(__file__).resolve().parent.parent / "krypt"
-dump_dir.mkdir(parents=True, exist_ok=True)
-DEPOSIT_PENDING_FILE    = dump_dir / "depositpending.json"
-DEPOSIT_CONFIRMED_FILE  = dump_dir / "depositconfirmed.json"
-WITHDRAW_PENDING_FILE   = dump_dir / "withdrawpending.json"
-WITHDRAW_CONFIRMED_FILE = dump_dir / "withdrawconfirmed.json"
-SWEEP_LOG_FILE          = dump_dir / "sweeps.json"
-AFFILIATE_SKIM_FILE     = dump_dir / "affiliate_skim.json"   # NY
-
-FEE_MARGIN = 1000000        # 0.00001 SOL, mer enn nok på devnet/mainnet
-
-def run_gdrive_backup_bg():
-    def _runner():
-        try:
-            export_deposits_and_keys()
-        except Exception as e:
-            logging.error("[gdrive-backup ERROR] %s", e)
-    threading.Thread(target=_runner, daemon=True).start()
-
-# ───────── helper-funksjoner ─────────────────────────────────
-def _load_keypair(hexstr:str)->Keypair:
-    b = bytes.fromhex(hexstr)
-    if len(b)==32: return Keypair.from_seed(b)
-    if len(b)==64: return Keypair.from_bytes(b)
-    raise ValueError("private key må være 32 eller 64 bytes")
-
-async def _confirm_with_retry(client, sig_obj, tries=5, delay=0.5)->bool:
-    """bekreft tx-signatur med eksponentiell back-off"""
-    for _ in range(tries):
-        try:
-            await client.confirm_transaction(sig_obj, commitment="confirmed"); return True
-        except SolanaRpcException as e:
-            if "429" not in str(e): raise
-        await asyncio.sleep(delay); delay*=2
-    return False
-
-def _load(p:Path)->list[dict]:              return json.loads(p.read_text()) if p.exists() else []
-def _write(p:Path, arr:list[dict])->None:    p.write_text(json.dumps(arr, indent=2))
-def _append(p:Path, rec:dict)->None:         a=_load(p); a.append(rec); _write(p,a)
-
-# pris-cache
-_PRICE={"ts":0.0,"usd":125.0}
-async def sol_price_usd() -> float:
-    try:
-        if time.time() - _PRICE["ts"] < 60:
-            return _PRICE["usd"]
-        async with aiohttp.ClientSession() as s:
-            resp = await s.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "solana", "vs_currencies": "usd"},
-                timeout=10
-            )
-            d = await resp.json()
-        price = float(d.get("solana", {}).get("usd", 0))
-        if price > 0:
-            _PRICE.update(ts=time.time(), usd=price)
-            return price
-        else:
-            logging.warning("CoinGecko returned no SOL price, fallback to cached")
-            return _PRICE["usd"]
-    except Exception as e:
-        logging.error("ERROR fetching SOL price from CoinGecko: %s", e)
-        return _PRICE["usd"]  # fallback!
-
-lamports_to_usd=lambda l: l/LAMPORT*_PRICE["usd"]
 
 
-
-async def _price_refresher():
-    await asyncio.sleep(2)
-    while True:
-        try:
-            v = await sol_price_usd()  # updates _PRICE in-place
-            # broadcast to all clients
-            socketio.emit("price_update", {"usd": _PRICE["usd"], "ts": _PRICE["ts"]}, broadcast=True)
-        except Exception as e:
-            logging.warning("[price_refresher] update failed: %s", e)
-        await asyncio.sleep(62)
+def payment_finality() -> str:
+    return os.getenv("PAYMENT_FINALITY", "finalized").strip() or "finalized"
 
 
-# ───────── create deposit / withdrawal ──────────────────────
-def new_deposit_address(uid: int) -> str:
-    kp = Keypair(); now = datetime.now(timezone.utc)
-    with db_session() as db:
-        db.add(Deposit(user_id=uid, pubkey=str(kp.pubkey()),
-                       priv_hex=bytes(kp).hex(), status="PENDING", created_utc=now))
-        name = db.get(User, uid).username
-    _append(DEPOSIT_PENDING_FILE, {
-        "username": name, "pubkey": str(kp.pubkey()),
-        "priv_hex": bytes(kp).hex(), "status": "PENDING", "lamports": None,
-        "created_utc": now.isoformat(), "confirmed_utc": None
-    })
-    run_gdrive_backup_bg()
-    return str(kp.pubkey())
+def payment_poll_interval_seconds() -> int:
+    return env_int("PAYMENT_POLL_INTERVAL_SECONDS", 10)
 
-def new_withdrawal(db, uid: int, dest: str, lam: int) -> int:
-    from datetime import datetime, timezone
-    import traceback
 
-    logging.info("=" * 50)
-    logging.info(f"[new_withdrawal] CALLED! uid={uid} dest={dest[:8]}... lam={lam}")
-    now = datetime.now(timezone.utc)
+def sweep_poll_interval_seconds() -> int:
+    return env_int("SWEEP_POLL_INTERVAL_SECONDS", 60)
 
-    try:
-        own_deposits = db.query(Deposit).filter(Deposit.user_id == uid).all()
-        if any(dep.pubkey == dest for dep in own_deposits):
-            raise Exception("Withdrawal to your own deposit address is not allowed.")
 
-        hot_pubkey = _load_keypair(HOT_PRIV_HEX).pubkey()
-        if dest == str(hot_pubkey):
-            raise Exception("Withdrawal to the main site wallet is not allowed.")
+def devnet_payment_faucet_enabled() -> bool:
+    return use_devnet() and env_bool("DEVNET_PAYMENT_FAUCET_ENABLED", False)
 
-        # ---------- fee ----------
-        fee_lam  = int(lam * WITHDRAW_FEE_PCT / 100)
-        send_lam = lam - fee_lam
-        if send_lam <= 0:
-            raise Exception("Withdrawal amount too low after fee.")
 
-        w = Withdrawal(
-            user_id=uid,
-            dest_pubkey=dest,
-            lamports=send_lam,
-            status="PENDING",
-            created_utc=now
+def list_plans() -> list[dict[str, Any]]:
+    plans = []
+    for plan_id, cfg in PLAN_CONFIG.items():
+        plans.append(
+            {
+                "id": plan_id,
+                "label": cfg["label"],
+                "usdPrice": plan_price_usd(plan_id),
+            }
         )
-        db.add(w); db.flush()
+    return plans
 
-        user = db.get(User, uid)
-        name = user.username if user else "<UKJENT>"
 
-        _append(WITHDRAW_PENDING_FILE, {
-            "id": w.id,
-            "username": name,
-            "dest_pubkey": dest,
-            "lamports": send_lam,
-            "created_utc": now.isoformat(),
-            "status": "PENDING",
-            "tx_sig": None,
-            "confirmed_utc": None
-        })
+def plan_price_usd(plan: str) -> float:
+    if plan not in PLAN_CONFIG:
+        raise ValueError("invalid plan")
+    cfg = PLAN_CONFIG[plan]
+    env_key = cfg["price_env"]
+    value = env_float(env_key, float(cfg["default_usd"]))
+    if value is None or value <= 0:
+        raise AccessConfigError(f"{env_key} must be set to a positive number")
+    return float(value)
 
-        run_gdrive_backup_bg()
-        return w.id
 
-    except Exception as e:
-        logging.error("[new_withdrawal] ERROR: %s", e)
-        import traceback; traceback.print_exc()
+def add_plan_duration(start: datetime, plan: str) -> datetime:
+    if plan not in PLAN_CONFIG:
+        raise ValueError("invalid plan")
+    months = int(PLAN_CONFIG[plan]["months"])
+    source = start.astimezone(timezone.utc)
+    month_index = source.month - 1 + months
+    year = source.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(source.day, monthrange(year, month)[1])
+    return source.replace(year=year, month=month, day=day)
+
+
+def calculate_sol_amount_lamports(usd_price: float, sol_usd_rate: float) -> int:
+    if usd_price <= 0:
+        raise ValueError("usd_price must be positive")
+    if sol_usd_rate <= 0:
+        raise ValueError("sol_usd_rate must be positive")
+    lamports = (Decimal(str(usd_price)) / Decimal(str(sol_usd_rate))) * Decimal(LAMPORTS_PER_SOL)
+    return int(lamports.to_integral_value(rounding=ROUND_CEILING))
+
+
+def lamports_to_sol_string(lamports: int) -> str:
+    whole = lamports // LAMPORTS_PER_SOL
+    frac = lamports % LAMPORTS_PER_SOL
+    return f"{whole}.{frac:09d}".rstrip("0").rstrip(".")
+
+
+def create_deposit_wallet() -> tuple[str, bytes]:
+    keypair = Keypair()
+    return str(keypair.pubkey()), bytes(keypair)
+
+
+def encrypt_secret_key(secret_key: bytes) -> str:
+    return encrypt_deposit_secret(secret_key)
+
+
+def decrypt_secret_key(encrypted_secret_key: str) -> bytes:
+    return decrypt_deposit_secret(encrypted_secret_key)
+
+
+def _load_keypair(secret_key: bytes) -> Keypair:
+    if len(secret_key) == 32:
+        return Keypair.from_seed(secret_key)
+    if len(secret_key) == 64:
+        return Keypair.from_bytes(secret_key)
+    raise ValueError("deposit secret key must be 32 or 64 bytes")
+
+
+def _fetch_sol_usd_price_sync(provider: str) -> float:
+    if provider != "coingecko":
+        raise AccessConfigError(f"unsupported SOL_PRICE_PROVIDER: {provider}")
+    params = urllib.parse.urlencode({"ids": "solana", "vs_currencies": "usd"})
+    url = f"https://api.coingecko.com/api/v3/simple/price?{params}"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    price = float(data.get("solana", {}).get("usd", 0))
+    if price <= 0:
+        raise RuntimeError("CoinGecko returned no SOL/USD price")
+    return price
+
+
+async def _fetch_sol_usd_price(provider: str) -> float:
+    return await asyncio.to_thread(_fetch_sol_usd_price_sync, provider)
+
+
+async def get_sol_usd_price_cached() -> float:
+    cache_seconds = env_int("SOL_PRICE_CACHE_SECONDS", 300)
+    now_ts = time.time()
+    cached = _PRICE_CACHE.get("usd")
+    if cached and now_ts - float(_PRICE_CACHE.get("ts") or 0) < cache_seconds:
+        return float(cached)
+
+    provider = os.getenv("SOL_PRICE_PROVIDER", "coingecko").strip().lower() or "coingecko"
+    try:
+        price = await _fetch_sol_usd_price(provider)
+        _PRICE_CACHE.update(ts=now_ts, usd=price)
+        return float(price)
+    except Exception as exc:
+        fallback = env_float("SOL_PRICE_USD_FALLBACK")
+        if fallback and fallback > 0:
+            log.warning("SOL price provider failed; using fallback: %s", safe_error(exc))
+            _PRICE_CACHE.update(ts=now_ts, usd=fallback)
+            return float(fallback)
+        if cached:
+            log.warning("SOL price provider failed; using previous cached price: %s", safe_error(exc))
+            return float(cached)
         raise
 
-# ───────── sweep-poller (uendret) ─────────
-async def poll_unswept_balances() -> None:
-    await asyncio.sleep(10)
-    while True:
-        with db_session() as db:
-            deposits = db.query(Deposit.id, Deposit.priv_hex, Deposit.pubkey, Deposit.lamports).all()
-        for dep_id, priv_hex, pubkey, lamports in deposits:
-            try:
-                async def check_and_sweep():
-                    async with AsyncClient(SOLANA_RPC) as c:
-                        bal = (await c.get_balance(Pubkey.from_string(pubkey), commitment=Commitment("processed"))).value
-                        rent_exempt = (await c.get_minimum_balance_for_rent_exemption(0)).value
-                        min_left = rent_exempt + 10_000
-                        if bal > min_left:
-                            logging.info(f"[poll_unswept_balances] Sweeper dep_id={dep_id}, bal={bal}, rent+fee={min_left}")
-                            await sweep_to_cold(0, priv_hex)
-                        else:
-                            logging.info(f"[poll_unswept_balances] Ikke nok for sweep dep_id={dep_id}, bal={bal}, rent+fee={min_left}")
-                asyncio.create_task(check_and_sweep())
-            except Exception as e:
-                logging.error("[poll_unswept_balances] ERROR: %s", e)
-        await asyncio.sleep(SWEEP_POLL_SECONDS)
 
-# ───────── sweep én deposit-wallet ──────────────────────────
-async def sweep_to_cold(_: int, priv_hex: str) -> None:
-    import traceback
-    await asyncio.sleep(SWEEP_AFTER_SEC)
+async def get_deposit_balance_lamports(
+    deposit_public_key: str,
+    *,
+    client: AsyncClient | None = None,
+    commitment: str | None = None,
+) -> int:
+    own_client = client is None
+    rpc_client = client or AsyncClient(solana_rpc_url())
     try:
-        kp = _load_keypair(priv_hex)
-        async with AsyncClient(SOLANA_RPC) as c:
-            bal = (await c.get_balance(kp.pubkey(), commitment=Commitment("processed"))).value
-            rent_exempt = (await c.get_minimum_balance_for_rent_exemption(0)).value
-            FEE_MARGIN = 10_000
-            min_left = rent_exempt + FEE_MARGIN
-            if bal <= min_left:
-                logging.info(f"[sweep_to_cold] Ikke nok saldo til sweep (bal={bal}, rent+fee={min_left})")
-                return
-            send_amt = bal - min_left
-            if send_amt <= 0:
-                return
-            bh = (await c.get_latest_blockhash()).value.blockhash
-            tx = Transaction(recent_blockhash=bh).add(
-                transfer(TransferParams(
-                    from_pubkey=kp.pubkey(),
-                    to_pubkey=Pubkey.from_string(COLD_STORAGE_PUB),
-                    lamports=send_amt
-                ))
-            )
-            sig_obj = (await c.send_transaction(tx, kp)).value
-            sig = str(sig_obj)
-            ok = await _confirm_with_retry(c, sig_obj)
-            _append(SWEEP_LOG_FILE, {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "src": str(kp.pubkey()),
-                "lamports": send_amt,
-                "left": min_left,
-                "sig": sig,
-                "confirmed": ok
-            })
-            try:
-                export_deposits_and_keys()
-            except Exception as e:
-                logging.error("[gdrive-backup sweep ERROR] %s", e)
-                traceback.print_exc()
-    except Exception as e:
-        logging.error("[sweep-error] %s", e)
-        traceback.print_exc()
+        response = await rpc_client.get_balance(
+            Pubkey.from_string(deposit_public_key),
+            commitment=Commitment(commitment or payment_finality()),
+        )
+        return int(response.value or 0)
+    finally:
+        if own_client:
+            await rpc_client.close()
 
-# ───────── deposit-poller (ENDRET) ──────────────────────────
-async def poll_pending_deposits(app) -> None:
-    await asyncio.sleep(2)
-    async with AsyncClient(SOLANA_RPC) as client:
-        while True:
-            cutoff = datetime.now(timezone.utc) - timedelta(seconds=PENDING_TTL_SEC)
-            with db_session() as db:
-                # Merk EXPIRED deposits
-                for d in db.query(Deposit).filter(Deposit.status=="PENDING",
-                                                  Deposit.created_utc < cutoff):
-                    d.status = "EXPIRED"
-                pendings = db.query(Deposit).filter_by(status="PENDING").all()
 
-            for dep in pendings:
-                pubkey = Pubkey.from_string(dep.pubkey)
-                bal = (await client.get_balance(pubkey, commitment=Commitment("processed"))).value
-                if bal <= 0:
-                    continue
+async def fund_devnet_payment_order(
+    order: dict[str, Any],
+    *,
+    lamports: int | None = None,
+) -> dict[str, Any]:
+    if not use_devnet():
+        raise AccessConfigError("devnet funding requires SOL_USE_DEVNET=1")
+    if not devnet_payment_faucet_enabled():
+        raise AccessConfigError("DEVNET_PAYMENT_FAUCET_ENABLED must be enabled")
+    if order["status"] != "pending":
+        raise ValueError("payment order is not pending")
 
-                rent_exempt = (await client.get_minimum_balance_for_rent_exemption(0)).value
+    amount_lamports = int(lamports if lamports is not None else order["sol_amount_lamports"])
+    max_lamports = env_int("DEVNET_PAYMENT_FAUCET_MAX_LAMPORTS", 2 * LAMPORTS_PER_SOL)
+    if amount_lamports <= 0:
+        raise ValueError("airdrop amount must be positive")
+    if amount_lamports > max_lamports:
+        raise ValueError("airdrop amount exceeds DEVNET_PAYMENT_FAUCET_MAX_LAMPORTS")
 
-                with db_session() as db:
-                    d = db.get(Deposit, dep.id)
-                    u = db.get(User, d.user_id)
-
-                    # Første måling: kreditér alt over rent-exempt
-                    if d.lamports is None:
-                        delta = bal - rent_exempt
-                        if delta <= 0:
-                            d.lamports = bal
-                            continue
-                    else:
-                        delta = bal - d.lamports
-                        if delta <= 0:
-                            d.lamports = bal
-                            continue
-
-                    # --------- BONUS & AFFILIATE BEREGNING ---------
-                    usd_val = lamports_to_usd(delta)
-
-                    # campaign-tier
-                    tier_pct = 0.0
-                    tier_label = ""
-                    if 25 <= usd_val < 50 and DEPOSITBONUS25 > 0:
-                        tier_pct = DEPOSITBONUS25; tier_label = "25"
-                    elif 50 <= usd_val < 100 and DEPOSITBONUS50 > 0:
-                        tier_pct = DEPOSITBONUS50; tier_label = "50"
-                    elif usd_val >= 100 and DEPOSITBONUS100 > 0:
-                        tier_pct = DEPOSITBONUS100; tier_label = "100"
-                    tier_bonus = int((delta * tier_pct) // 100)
-
-                    # affiliate – finn referrer hvis valgt
-                    aff_depositor_bonus = 0
-                    aff_referrer_cut = 0
-                    referrer_user_id = None
-
-                    try:
-                        if AffiliateSelection and AffiliateCode:
-                            sel = db.query(AffiliateSelection).filter_by(user_id=u.id).first()
-                            if sel:
-                                code = db.query(AffiliateCode).get(sel.code_id)
-                                if code and code.user_id != u.id:
-                                    referrer_user_id = code.user_id
-                                    aff_depositor_bonus = int((delta * AFFILIATE_BONUS_PCT) // 100)
-                                    aff_referrer_cut    = int((delta * AFFILIATE_BONUS_PCT) // 100)
-                    except Exception as e:
-                        logging.warning(f"[deposit-poller] affiliate lookup failed: {e}")
-
-                    # --------- KREDITERING ---------
-                    u.balance_lamports += (delta + aff_depositor_bonus + tier_bonus)
-                    d.lamports = bal
-                    if d.status != "CONFIRMED":
-                        d.status = "CONFIRMED"
-                        d.confirmed_utc = datetime.now(timezone.utc)
-
-                    # --------- LOGGING I NYE TABELLER ---------
-                    try:
-                        if aff_depositor_bonus or aff_referrer_cut:
-                            ap = AffiliatePayout(
-                                depositor_user_id=u.id,
-                                referrer_user_id=referrer_user_id,
-                                deposit_id=d.id,
-                                lamports_base_delta=delta,
-                                pct=float(AFFILIATE_BONUS_PCT),
-                                depositor_bonus_lamports=aff_depositor_bonus,
-                                referrer_bonus_lamports=aff_referrer_cut,
-                                created_utc=datetime.now(timezone.utc)
-                            )
-                            db.add(ap)
-                            db.flush()
-
-                        if tier_bonus:
-                            bp = BonusTierPayout(
-                                user_id=u.id,
-                                deposit_id=d.id,
-                                lamports_base_delta=delta,
-                                usd_value_used=float(usd_val),
-                                tier=tier_label or "",
-                                pct=float(tier_pct),
-                                bonus_lamports=tier_bonus,
-                                created_utc=datetime.now(timezone.utc)
-                            )
-                            db.add(bp)
-                    except Exception as e:
-                        logging.warning(f"[deposit-poller] bonus/affiliate log fail: {e}")
-
-                    # --------- ROLLOVER-BUCKET ---------
-                    try:
-                        bonus_sum = aff_depositor_bonus + tier_bonus
-                        create_rollover_bucket(
-                            user_id=u.id,
-                            deposit_id=d.id,
-                            base_delta_lamports=delta,
-                            bonus_lamports_sum=bonus_sum,
-                            base_mode=None,   # ta fra env
-                            multiplier=None   # ta fra env
-                        )
-                    except Exception as e:
-                        logging.warning(f"[deposit-poller] rollover bucket create failed: {e}")
-
-                # --------- SOCKET-OPPDATERING ---------
-                with app.app_context():
-                    try:
-                        socketio.emit("deposit_confirmed",
-                            {"lamports": delta, "usd": lamports_to_usd(delta),
-                             "new_total": u.balance_lamports}, room=f"user{u.id}")
-                    except Exception:
-                        pass
-
-                # --------- AFFILIATE SKIM ON-CHAIN ---------
-                if aff_referrer_cut > 0 and referrer_user_id:
-                    try:
-                        sig, sent = await skim_to_affiliate_wallet(dep.priv_hex, aff_referrer_cut)
-                        _append(AFFILIATE_SKIM_FILE, {
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "deposit_id": dep.id,
-                            "depositor_user_id": u.id,
-                            "referrer_user_id": referrer_user_id,
-                            "requested_lamports": aff_referrer_cut,
-                            "sent_lamports": sent,
-                            "tx_sig": sig
-                        })
-                        # oppdater siste AffiliatePayout med skim-info
-                        with db_session() as db:
-                            try:
-                                ap = (db.query(AffiliatePayout)
-                                      .filter(AffiliatePayout.deposit_id == dep.id,
-                                              AffiliatePayout.depositor_user_id == u.id)
-                                      .order_by(AffiliatePayout.id.desc())
-                                      .first())
-                                if ap:
-                                    ap.skim_tx_sig = sig
-                                    ap.skim_sent_lamports = int(sent or 0)
-                                    ap.skim_status = "CONFIRMED" if sig else "FAILED"
-                            except Exception as e:
-                                logging.warning(f"[deposit-poller] update AffiliatePayout skim: {e}")
-                    except Exception as e:
-                        logging.error(f"[deposit-poller] affiliate skim failed: {e}")
-
-                # --------- sweep om nødvendig ---------
-                min_left = rent_exempt + 10_000
-                if bal > min_left:
-                    asyncio.create_task(sweep_to_cold(bal, dep.priv_hex))
-
-            # oppdater dumpfiler
-            pend, conf = [], []
-            with db_session() as db:
-                for d in db.query(Deposit).all():
-                    row = {"username": db.get(User, d.user_id).username, "pubkey": d.pubkey,
-                           "status": d.status, "lamports": d.lamports,
-                           "created_utc": d.created_utc.isoformat(),
-                           "confirmed_utc": d.confirmed_utc.isoformat() if d.confirmed_utc else None}
-                    (pend if d.status == "PENDING" else conf).append(row)
-            _write(DEPOSIT_PENDING_FILE, pend)
-            _write(DEPOSIT_CONFIRMED_FILE, conf)
-            await asyncio.sleep(10)
-
-# ───────── withdraw-poller (uendret) ──────────────────────────────────
-async def poll_pending_withdrawals(app)->None:
-    await asyncio.sleep(5)
-    hot_kp=_load_keypair(HOT_PRIV_HEX)
-    async with AsyncClient(SOLANA_RPC) as client:
-        while True:
-            with db_session() as db:
-                pendings=db.query(Withdrawal).filter_by(status="PENDING").all()
-            for w in pendings:
+    pubkey = Pubkey.from_string(order["deposit_public_key"])
+    async with AsyncClient(solana_rpc_url()) as client:
+        response = await client.request_airdrop(
+            pubkey,
+            amount_lamports,
+            commitment=Commitment(payment_finality()),
+        )
+        signature = getattr(response, "value", None)
+        if signature is None:
+            error_text = safe_error(response)
+            if hasattr(response, "to_json"):
                 try:
-                    tx=Transaction(recent_blockhash=(await client.get_latest_blockhash()).value.blockhash)\
-                        .add(transfer(TransferParams(from_pubkey=hot_kp.pubkey(),
-                                                     to_pubkey=Pubkey.from_string(w.dest_pubkey),
-                                                     lamports=w.lamports)))
-                    sig_obj=(await client.send_transaction(tx,hot_kp)).value
-                    sig=str(sig_obj)
-                    ok=await _confirm_with_retry(client,sig_obj)
-                    status="CONFIRMED" if ok else "SUBMITTED"
+                    error_text = response.to_json()
                 except Exception:
-                    app.logger.exception(f"[withdraw-poller] error id={w.id}")
-                    status="SUBMITTED"; sig=None
-                conf=datetime.now(timezone.utc)
-                with db_session() as db:
-                    rec=db.get(Withdrawal,w.id)
-                    rec.status=status; rec.tx_sig=sig; rec.confirmed_utc=conf
+                    pass
+            raise DevnetFundingError(f"devnet airdrop failed: {error_text}")
+        await _confirm_signature(client, signature)
+        balance = await get_deposit_balance_lamports(
+            order["deposit_public_key"],
+            client=client,
+            commitment=payment_finality(),
+        )
+    return {
+        "status": "funded",
+        "signature": str(signature),
+        "lamports": amount_lamports,
+        "balanceLamports": balance,
+        "solAmount": lamports_to_sol_string(amount_lamports),
+    }
 
-                pend,conf_list=[],[]
-                with db_session() as db:
-                    for x in db.query(Withdrawal).all():
-                        row={"id":x.id,"username":db.get(User,x.user_id).username,
-                             "dest_pubkey":x.dest_pubkey,"lamports":x.lamports,
-                             "created_utc":x.created_utc.isoformat(),"status":x.status,
-                             "tx_sig":x.tx_sig,
-                             "confirmed_utc":x.confirmed_utc.isoformat() if x.confirmed_utc else None}
-                        (pend if x.status=="PENDING" else conf_list).append(row)
-                _write(WITHDRAW_PENDING_FILE,pend); _write(WITHDRAW_CONFIRMED_FILE,conf_list)
 
-                with app.app_context():
-                    socketio.emit("withdraw_update",
-                        {"id":w.id,"status":status,"lamports":w.lamports,
-                         "usd":lamports_to_usd(w.lamports),"tx_sig":sig,
-                         "created_utc":w.created_utc.isoformat(),
-                         "confirmed_utc":conf.isoformat()}, room=f"user{w.user_id}")
-            await asyncio.sleep(15)
-
-# ───────── send_sol helper ──────────────────────────────────
-def send_sol(to_pub:str, lamports:int)->None:
-    if not HOT_PRIV_HEX:
-        logging.info(f"[send_sol] stub send {lamports/LAMPORT:.4f} SOL -> {to_pub}")
-        return
-    async def _send():
+async def _confirm_signature(
+    client: AsyncClient,
+    signature: Signature,
+    *,
+    tries: int = 8,
+    delay: float = 0.75,
+) -> bool:
+    for attempt in range(tries):
         try:
-            kp=_load_keypair(HOT_PRIV_HEX)
-            async with AsyncClient(SOLANA_RPC) as client:
-                tx=Transaction(recent_blockhash=(await client.get_latest_blockhash()).value.blockhash)\
-                    .add(transfer(TransferParams(from_pubkey=kp.pubkey(),
-                                                 to_pubkey=Pubkey.from_string(to_pub),
-                                                 lamports=lamports)))
-                sig_obj=(await client.send_transaction(tx,kp)).value
-                await _confirm_with_retry(client,sig_obj)
-        except Exception as exc:
-            logging.error("[send_sol-error] %s", exc)
-    asyncio.create_task(_send())
+            response = await client.confirm_transaction(signature, commitment=payment_finality())
+            value = getattr(response, "value", None)
+            if value is None or getattr(value, "err", None) is None:
+                return True
+        except SolanaRpcException as exc:
+            if "429" not in str(exc) and attempt == tries - 1:
+                raise
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.6, 5.0)
+    return False
+
+
+def _create_account_for_confirmed_order(
+    conn,
+    *,
+    order: dict[str, Any],
+    confirmed_balance_lamports: int,
+    now: datetime,
+) -> tuple[int, str, str, datetime]:
+    user_key = generate_user_key()
+    restore_key = generate_restore_key()
+    paid_until = add_plan_duration(now, order["plan"])
+    now_iso = isoformat(now)
+    cur = conn.execute(
+        """
+        INSERT INTO access_accounts(
+          user_key_hash, restore_key_hash, plan, paid_until, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            hash_access_key(user_key),
+            hash_restore_key(restore_key),
+            order["plan"],
+            isoformat(paid_until),
+            now_iso,
+            now_iso,
+        ),
+    )
+    account_id = int(cur.lastrowid)
+    claim_payload = encrypt_claim_payload(
+        {
+            "userKey": user_key,
+            "restoreKey": restore_key,
+            "paidUntil": isoformat(paid_until),
+        }
+    )
+    conn.execute(
+        """
+        UPDATE payment_orders
+        SET status = 'confirmed',
+            confirmed_at = ?,
+            confirmed_balance_lamports = ?,
+            created_account_id = ?,
+            encrypted_claim_payload = ?,
+            updated_at = ?
+        WHERE id = ? AND status = 'pending'
+        """,
+        (
+            now_iso,
+            int(confirmed_balance_lamports),
+            account_id,
+            claim_payload,
+            now_iso,
+            int(order["id"]),
+        ),
+    )
+    access_db.audit_event(
+        "payment_confirmed",
+        account_id=account_id,
+        payment_order_id=int(order["id"]),
+        metadata={
+            "deposit_public_key": order["deposit_public_key"],
+            "confirmed_balance_lamports": int(confirmed_balance_lamports),
+            "required_lamports": int(order["sol_amount_lamports"]),
+        },
+        conn=conn,
+    )
+    access_db.audit_event(
+        "account_created",
+        account_id=account_id,
+        payment_order_id=int(order["id"]),
+        metadata={"plan": order["plan"], "paid_until": isoformat(paid_until)},
+        conn=conn,
+    )
+    return account_id, user_key, restore_key, paid_until
+
+
+async def confirm_payment_order_if_funded(order_id: int) -> dict[str, Any]:
+    access_db.init_db()
+    order = access_db.get_order(order_id)
+    if not order:
+        return {"status": "missing"}
+    if order["status"] != "pending":
+        return {"status": order["status"], "changed": False}
+
+    now = utcnow()
+    expires_at = parse_datetime(order.get("expires_at"))
+    if expires_at and expires_at < now:
+        with access_db.db() as conn:
+            _mark_order_expired(conn, int(order["id"]), now)
+        return {"status": "expired", "changed": True}
+
+    balance = await get_deposit_balance_lamports(order["deposit_public_key"])
+    if balance < int(order["sol_amount_lamports"]):
+        return {
+            "status": "pending",
+            "changed": False,
+            "balanceLamports": balance,
+            "requiredLamports": int(order["sol_amount_lamports"]),
+        }
+
+    with access_db.db() as conn:
+        current = access_db.row_to_dict(
+            conn.execute("SELECT * FROM payment_orders WHERE id = ?", (int(order["id"]),)).fetchone()
+        )
+        if not current:
+            return {"status": "missing"}
+        if current["status"] != "pending":
+            return {"status": current["status"], "changed": False}
+        account_id, _user_key, _restore_key, paid_until = _create_account_for_confirmed_order(
+            conn,
+            order=current,
+            confirmed_balance_lamports=balance,
+            now=utcnow(),
+        )
+
+    log.info(
+        "payment confirmed order_id=%s deposit=%s lamports=%s",
+        order["id"],
+        order["deposit_public_key"],
+        balance,
+    )
+    return {
+        "status": "confirmed",
+        "changed": True,
+        "accountId": account_id,
+        "paidUntil": isoformat(paid_until),
+        "balanceLamports": balance,
+        "requiredLamports": int(order["sol_amount_lamports"]),
+    }
+
+
+def _mark_order_expired(conn, order_id: int, now: datetime) -> None:
+    conn.execute(
+        """
+        UPDATE payment_orders
+        SET status = 'expired', updated_at = ?
+        WHERE id = ? AND status = 'pending'
+        """,
+        (isoformat(now), int(order_id)),
+    )
+    access_db.audit_event(
+        "payment_expired",
+        payment_order_id=int(order_id),
+        metadata={},
+        conn=conn,
+    )
+
+
+async def poll_pending_payments(*, run_forever: bool = False) -> dict[str, int]:
+    totals = {"checked": 0, "confirmed": 0, "expired": 0, "short": 0, "failed": 0}
+    while True:
+        access_db.init_db()
+        now = utcnow()
+        for order in access_db.pending_orders():
+            totals["checked"] += 1
+            expires_at = parse_datetime(order["expires_at"])
+            if expires_at and expires_at < now:
+                with access_db.db() as conn:
+                    _mark_order_expired(conn, int(order["id"]), now)
+                totals["expired"] += 1
+                continue
+
+            try:
+                result = await confirm_payment_order_if_funded(int(order["id"]))
+            except Exception as exc:
+                log.warning(
+                    "payment balance check failed order_id=%s deposit=%s error=%s",
+                    order["id"],
+                    order["deposit_public_key"],
+                    safe_error(exc),
+                )
+                totals["failed"] += 1
+                continue
+
+            if result.get("status") == "expired":
+                totals["expired"] += 1
+                continue
+            if result.get("status") == "pending":
+                totals["short"] += 1
+                continue
+            if result.get("status") == "confirmed" and result.get("changed"):
+                totals["confirmed"] += 1
+
+        if not run_forever:
+            return totals
+        await asyncio.sleep(payment_poll_interval_seconds())
+
+
+def calculate_sweep_amount(balance_lamports: int, estimated_fee_lamports: int) -> int:
+    return int(balance_lamports) - int(estimated_fee_lamports)
+
+
+async def estimate_transfer_fee_lamports(
+    client: AsyncClient,
+    *,
+    from_pubkey: Pubkey,
+    to_pubkey: Pubkey,
+    blockhash,
+) -> int:
+    tx = Transaction(recent_blockhash=blockhash, fee_payer=from_pubkey).add(
+        transfer(
+            TransferParams(
+                from_pubkey=from_pubkey,
+                to_pubkey=to_pubkey,
+                lamports=1,
+            )
+        )
+    )
+    response = await client.get_fee_for_message(tx.compile_message(), commitment=Commitment(payment_finality()))
+    fee = int(response.value or 0)
+    if fee <= 0:
+        raise RuntimeError("RPC returned no transfer fee")
+    return fee
+
+
+async def send_transfer_lamports(
+    client: AsyncClient,
+    *,
+    keypair: Keypair,
+    to_pubkey: Pubkey,
+    lamports: int,
+    blockhash,
+) -> Signature:
+    tx = Transaction(recent_blockhash=blockhash, fee_payer=keypair.pubkey()).add(
+        transfer(
+            TransferParams(
+                from_pubkey=keypair.pubkey(),
+                to_pubkey=to_pubkey,
+                lamports=int(lamports),
+            )
+        )
+    )
+    response = await client.send_transaction(
+        tx,
+        keypair,
+        opts=TxOpts(skip_preflight=False, preflight_commitment=payment_finality()),
+    )
+    return response.value
+
+
+async def sweep_deposit_to_cold(payment_order_id: int) -> dict[str, Any]:
+    access_db.init_db()
+    if access_db.has_successful_sweep(payment_order_id):
+        return {"status": "already_swept", "paymentOrderId": payment_order_id}
+
+    order = access_db.get_order(payment_order_id)
+    if not order:
+        raise ValueError("payment order not found")
+    if order["status"] not in {"confirmed", "swept"}:
+        return {"status": "skipped", "reason": "order_not_confirmed"}
+
+    cold_wallet = os.getenv("SOLANA_COLD_WALLET_PUBLIC_KEY", "").strip()
+    if not cold_wallet:
+        raise AccessConfigError("SOLANA_COLD_WALLET_PUBLIC_KEY is required")
+
+    secret_key = decrypt_secret_key(order["encrypted_deposit_secret_key"])
+    keypair = _load_keypair(secret_key)
+    cold_pubkey = Pubkey.from_string(cold_wallet)
+    min_balance = env_int("SWEEP_MIN_BALANCE_LAMPORTS", 5000)
+    max_rounds = 3
+    final_result: dict[str, Any] = {"status": "pending"}
+
+    async with AsyncClient(solana_rpc_url()) as client:
+        for _round in range(max_rounds):
+            if access_db.has_successful_sweep(payment_order_id):
+                return {"status": "already_swept", "paymentOrderId": payment_order_id}
+
+            balance_before = await get_deposit_balance_lamports(
+                order["deposit_public_key"],
+                client=client,
+                commitment=payment_finality(),
+            )
+            if balance_before == 0:
+                access_db.create_sweep(
+                    payment_order_id=payment_order_id,
+                    deposit_public_key=order["deposit_public_key"],
+                    cold_wallet_public_key=cold_wallet,
+                    balance_before_lamports=0,
+                    fee_lamports=0,
+                    amount_sent_lamports=0,
+                    balance_after_lamports=0,
+                    sweep_signature=None,
+                    status="swept",
+                )
+                final_result = {"status": "swept", "amountSentLamports": 0, "balanceAfterLamports": 0}
+                break
+
+            if balance_before <= min_balance:
+                access_db.create_sweep(
+                    payment_order_id=payment_order_id,
+                    deposit_public_key=order["deposit_public_key"],
+                    cold_wallet_public_key=cold_wallet,
+                    balance_before_lamports=balance_before,
+                    fee_lamports=0,
+                    amount_sent_lamports=0,
+                    balance_after_lamports=balance_before,
+                    sweep_signature=None,
+                    status="dust_unspendable",
+                    error="balance at or below SWEEP_MIN_BALANCE_LAMPORTS",
+                )
+                final_result = {"status": "dust_unspendable", "balanceAfterLamports": balance_before}
+                break
+
+            blockhash = (await client.get_latest_blockhash(commitment=Commitment(payment_finality()))).value.blockhash
+            fee_lamports = await estimate_transfer_fee_lamports(
+                client,
+                from_pubkey=keypair.pubkey(),
+                to_pubkey=cold_pubkey,
+                blockhash=blockhash,
+            )
+            amount_to_send = calculate_sweep_amount(balance_before, fee_lamports)
+            if amount_to_send <= 0:
+                access_db.create_sweep(
+                    payment_order_id=payment_order_id,
+                    deposit_public_key=order["deposit_public_key"],
+                    cold_wallet_public_key=cold_wallet,
+                    balance_before_lamports=balance_before,
+                    fee_lamports=fee_lamports,
+                    amount_sent_lamports=0,
+                    balance_after_lamports=balance_before,
+                    sweep_signature=None,
+                    status="dust_unspendable",
+                    error="balance cannot cover estimated transaction fee",
+                )
+                final_result = {"status": "dust_unspendable", "balanceAfterLamports": balance_before}
+                break
+
+            signature = await send_transfer_lamports(
+                client,
+                keypair=keypair,
+                to_pubkey=cold_pubkey,
+                lamports=amount_to_send,
+                blockhash=blockhash,
+            )
+            await _confirm_signature(client, signature)
+            balance_after = await get_deposit_balance_lamports(
+                order["deposit_public_key"],
+                client=client,
+                commitment=payment_finality(),
+            )
+            status = "swept" if balance_after == 0 else "dust_unspendable"
+            error = None
+            if balance_after > 0 and balance_after > fee_lamports:
+                access_db.create_sweep(
+                    payment_order_id=payment_order_id,
+                    deposit_public_key=order["deposit_public_key"],
+                    cold_wallet_public_key=cold_wallet,
+                    balance_before_lamports=balance_before,
+                    fee_lamports=fee_lamports,
+                    amount_sent_lamports=amount_to_send,
+                    balance_after_lamports=balance_after,
+                    sweep_signature=str(signature),
+                    status="pending",
+                    error="balance remained after sweep; retrying",
+                )
+                continue
+            if balance_after > 0:
+                error = "remaining balance is not enough to cover another transfer fee"
+
+            access_db.create_sweep(
+                payment_order_id=payment_order_id,
+                deposit_public_key=order["deposit_public_key"],
+                cold_wallet_public_key=cold_wallet,
+                balance_before_lamports=balance_before,
+                fee_lamports=fee_lamports,
+                amount_sent_lamports=amount_to_send,
+                balance_after_lamports=balance_after,
+                sweep_signature=str(signature),
+                status=status,
+                error=error,
+            )
+            log.info(
+                "sweep status=%s order_id=%s deposit=%s balance_before=%s balance_after=%s signature=%s",
+                status,
+                payment_order_id,
+                order["deposit_public_key"],
+                balance_before,
+                balance_after,
+                str(signature),
+            )
+            final_result = {
+                "status": status,
+                "signature": str(signature),
+                "amountSentLamports": amount_to_send,
+                "balanceAfterLamports": balance_after,
+            }
+            break
+
+    if final_result.get("status") == "swept":
+        access_db.execute(
+            "UPDATE payment_orders SET status = 'swept', updated_at = ? WHERE id = ?",
+            (isoformat(utcnow()), payment_order_id),
+        )
+    return final_result
+
+
+async def poll_unswept_deposits(*, run_forever: bool = False) -> dict[str, int]:
+    totals = {"checked": 0, "swept": 0, "dust": 0, "failed": 0, "skipped": 0}
+    while True:
+        access_db.init_db()
+        if not env_bool("SWEEP_ENABLED", True):
+            if not run_forever:
+                return totals
+            await asyncio.sleep(sweep_poll_interval_seconds())
+            continue
+
+        orders = access_db.confirmed_unswept_orders()
+        for order in orders:
+            totals["checked"] += 1
+            confirmed_at = parse_datetime(order["confirmed_at"])
+            if confirmed_at and utcnow() < confirmed_at + timedelta(seconds=env_int("SWEEP_AFTER_SECONDS", 60)):
+                totals["skipped"] += 1
+                continue
+            try:
+                result = await sweep_deposit_to_cold(int(order["id"]))
+                if result["status"] == "swept":
+                    totals["swept"] += 1
+                elif result["status"] == "dust_unspendable":
+                    totals["dust"] += 1
+                elif result["status"] == "already_swept":
+                    totals["skipped"] += 1
+                else:
+                    totals["failed"] += 1
+            except Exception as exc:
+                totals["failed"] += 1
+                access_db.create_sweep(
+                    payment_order_id=int(order["id"]),
+                    deposit_public_key=order["deposit_public_key"],
+                    cold_wallet_public_key=os.getenv("SOLANA_COLD_WALLET_PUBLIC_KEY", ""),
+                    balance_before_lamports=0,
+                    fee_lamports=0,
+                    amount_sent_lamports=0,
+                    balance_after_lamports=None,
+                    sweep_signature=None,
+                    status="failed",
+                    error=safe_error(exc),
+                )
+                log.warning(
+                    "sweep failed order_id=%s deposit=%s error=%s",
+                    order["id"],
+                    order["deposit_public_key"],
+                    safe_error(exc),
+                )
+
+        if not run_forever:
+            return totals
+        await asyncio.sleep(sweep_poll_interval_seconds())
