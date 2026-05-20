@@ -78,7 +78,9 @@
           </div>
           <p id="paymentCountdown" class="small muted"></p>
           <p id="paymentStatus" class="payment-status">Waiting for payment...</p>
+          {% if devnet_payment_faucet %}
           <button id="devnetFundBtn" class="btn" type="button" hidden>Send Devnet SOL</button>
+          {% endif %}
         </div>
       </div>
     </section>

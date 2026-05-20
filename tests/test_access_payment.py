@@ -366,6 +366,21 @@ def test_devnet_payment_faucet_is_hidden_by_default():
     assert response.json()["devnetPaymentFaucet"] is False
 
 
+def test_devnet_payment_button_is_not_rendered_on_mainnet(monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    monkeypatch.setenv("SOL_USE_DEVNET", "0")
+    monkeypatch.setenv("DEVNET_PAYMENT_FAUCET_ENABLED", "1")
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "devnetFundBtn" not in response.text
+    assert "Send Devnet SOL" not in response.text
+
+
 def test_devnet_payment_fund_endpoint_uses_order_secret(monkeypatch):
     from fastapi.testclient import TestClient
     from backend.main import app

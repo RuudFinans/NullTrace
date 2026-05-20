@@ -191,15 +191,17 @@ async function createPayment(planId) {
   depositAddress.textContent = currentOrder.depositAddress;
   renderQr(currentOrder.depositAddress, qrCode);
   paymentStatus.textContent = "Waiting for payment...";
-  devnetFundBtn.hidden = !devnetPaymentFaucet;
-  devnetFundBtn.disabled = false;
+  if (devnetFundBtn) {
+    devnetFundBtn.hidden = !devnetPaymentFaucet;
+    devnetFundBtn.disabled = false;
+  }
   startCountdown();
   statusTimer = window.setInterval(checkPaymentStatus, 7000);
   checkPaymentStatus();
 }
 
 async function fundDevnetPayment() {
-  if (!currentOrder || !devnetPaymentFaucet) return;
+  if (!devnetFundBtn || !currentOrder || !devnetPaymentFaucet) return;
   devnetFundBtn.disabled = true;
   paymentStatus.textContent = "Sending devnet SOL...";
   const result = await postJson("/api/access/payment/devnet-fund", {
@@ -406,7 +408,7 @@ function bindAccessEvents() {
   });
   $("copyAmountBtn").addEventListener("click", event => copyText(currentOrder?.solAmount || "", event.currentTarget));
   $("copyAddressBtn").addEventListener("click", event => copyText(currentOrder?.depositAddress || "", event.currentTarget));
-  devnetFundBtn.addEventListener("click", fundDevnetPayment);
+  devnetFundBtn?.addEventListener("click", fundDevnetPayment);
   $("copyUserKeyBtn").addEventListener("click", event => copyText(claimedKeys?.userKey || "", event.currentTarget));
   $("copyRestoreKeyBtn").addEventListener("click", event => copyText(claimedKeys?.restoreKey || "", event.currentTarget));
   $("copyBothKeysBtn").addEventListener("click", event => copyText(keysText(), event.currentTarget));

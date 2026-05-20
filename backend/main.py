@@ -352,9 +352,14 @@ class TokenReq(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    devnet_payment_faucet = wallet.devnet_payment_faucet_enabled()
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "uuid": uuid4()},
+        {
+            "request": request,
+            "uuid": uuid4(),
+            "devnet_payment_faucet": devnet_payment_faucet,
+        },
     )
 
 

@@ -4,6 +4,7 @@
 
 # Local tools / one-off test files
 keygen.py
+decrypt_deposit_key.py
 loginadmintest
 loginadmintest*
 *admintest*
