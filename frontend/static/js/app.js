@@ -79,6 +79,67 @@ let nextCid = null; // ← NEW: pre-generert ID som vises i confirm og brukes ve
 
 let chatModuleReady = false;
 
+async function writeClipboardText(text){
+  if(navigator.clipboard&&window.isSecureContext){
+    try{
+      await navigator.clipboard.writeText(text);
+      return true;
+    }catch{}
+  }
+
+  const active=document.activeElement;
+  const helper=document.createElement("textarea");
+  helper.value=text;
+  helper.setAttribute("readonly","");
+  helper.setAttribute("aria-hidden","true");
+  helper.setAttribute("autocomplete","off");
+  helper.setAttribute("autocorrect","off");
+  helper.setAttribute("autocapitalize","off");
+  helper.setAttribute("spellcheck","false");
+  helper.setAttribute("inputmode","none");
+  Object.assign(helper.style,{
+    position:"fixed",
+    top:"0",
+    left:"0",
+    width:"1px",
+    height:"1px",
+    opacity:"0",
+    overflow:"hidden",
+    pointerEvents:"none",
+    fontSize:"16px"
+  });
+  const helperRoot=IDLG.open ? IDLG : document.body;
+  helperRoot.appendChild(helper);
+
+  let copied=false;
+  try{
+    helper.focus({preventScroll:true});
+    helper.select();
+    helper.setSelectionRange(0, text.length);
+    copied=document.execCommand("copy");
+  }catch{
+    copied=false;
+  }finally{
+    helper.blur();
+    helper.remove();
+    const selection=window.getSelection?.();
+    selection?.removeAllRanges?.();
+    if(active&&active!==document.body&&typeof active.focus==="function"){
+      try{ active.focus({preventScroll:true}); }catch{}
+    }
+  }
+  return copied;
+}
+
+function clearInviteFocus(){
+  const selection=window.getSelection?.();
+  selection?.removeAllRanges?.();
+  ITXT.blur();
+  if(document.activeElement&&IDLG.contains(document.activeElement)){
+    document.activeElement.blur();
+  }
+}
+
 function accessIsUnlocked(){
   const shell = $("appShell");
   return document.body.classList.contains("access-unlocked") || (shell && !shell.hidden);
@@ -419,45 +480,29 @@ Ibtn.onclick=()=>{
     INV_TIMER.textContent=`${m}:${s}`;
   },1000);
   IDLG.showModal();
+  requestAnimationFrame(()=>INV_COPY?.focus({preventScroll:true}));
 };
 async function copyInviteCapsule(){
   if(inviteCopyBusy) return;
   const capsule=ITXT.value;
   if(!capsule) return;
   inviteCopyBusy=true;
-  let copied=false;
-  try{
-    if(navigator.clipboard&&window.isSecureContext){
-      await navigator.clipboard.writeText(capsule);
-      copied=true;
-    } else {
-      ITXT.readOnly=true;
-      ITXT.focus({preventScroll:true});
-      ITXT.select();
-      ITXT.setSelectionRange(0, capsule.length);
-      copied=document.execCommand("copy");
-    }
-  }catch{
-    try{
-      ITXT.readOnly=true;
-      ITXT.focus({preventScroll:true});
-      ITXT.select();
-      ITXT.setSelectionRange(0, capsule.length);
-      copied=document.execCommand("copy");
-    }catch{}
-  }
-  INV_COPY.textContent=copied ? "Copied" : "Selected - Copy";
+  const copied=await writeClipboardText(capsule);
+  INV_COPY.textContent=copied ? "Copied" : "Copy failed";
   setTimeout(()=>{
     inviteCopyBusy=false;
     if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy";
   }, 1200);
 }
-INV_COPY.addEventListener("click", copyInviteCapsule);
+INV_COPY.addEventListener("click", ev=>{
+  ev.preventDefault();
+  copyInviteCapsule();
+});
 function closeInviteDialog(ev){
   ev?.preventDefault();
   inviteCopyBusy=false;
   clearInterval(inviteInterval);
-  ITXT.blur();
+  clearInviteFocus();
   if(IDLG.open) IDLG.close();
 }
 INV_CLOSE.addEventListener("click", closeInviteDialog);
