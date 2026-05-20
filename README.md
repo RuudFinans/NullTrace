@@ -49,6 +49,9 @@ SESSION_MAX_INACTIVE_SECONDS=180
 RESTORE_RESET_COOLDOWN_SECONDS=300
 
 INTERNAL_CRON_SECRET=
+
+ADMIN_PATH=
+ADMIN_PASSWORD_HASH=
 ```
 
 Generate secrets:
@@ -58,6 +61,25 @@ python -c "import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)
 ```
 
 Run that once each for `ACCESS_KEY_PEPPER_BASE64`, `SESSION_SECRET_BASE64`, and `DEPOSIT_WALLET_ENCRYPTION_KEY_BASE64`.
+
+Admin console:
+
+- Set `ADMIN_PATH` to a long random slug. The admin page will be `/<ADMIN_PATH>`.
+- Set `ADMIN_PASSWORD_HASH` to a PBKDF2 hash, not a plaintext password.
+
+Generate an admin password hash:
+
+```powershell
+@'
+import base64, getpass, hashlib, secrets
+password = getpass.getpass("Admin password: ").encode()
+salt = secrets.token_bytes(16)
+iterations = 310000
+digest = hashlib.pbkdf2_hmac("sha256", password, salt, iterations)
+enc = lambda b: base64.urlsafe_b64encode(b).decode().rstrip("=")
+print(f"pbkdf2_sha256${iterations}${enc(salt)}${enc(digest)}")
+'@ | python -
+```
 
 Database selection:
 

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>NullTrace Admin</title>
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#05070a">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <link rel="icon" href="{{ url_for('static', path='logo.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v={{ uuid }}">
+</head>
+<body class="admin-body">
+  <main id="adminApp" class="admin-shell" data-api-base="{{ admin_api_base }}">
+    <section id="adminLogin" class="admin-login">
+      <div class="admin-brand">
+        <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
+        <div>
+          <h1>NullTrace Admin</h1>
+          <p>Independent control plane</p>
+        </div>
+      </div>
+      <label for="adminPassword" class="visually-hidden">Admin password</label>
+      <input id="adminPassword" type="password" autocomplete="current-password" placeholder="Admin password">
+      <button id="adminLoginBtn" class="btn primary" type="button">Sign In</button>
+      <p id="adminLoginStatus" class="small muted" role="status"></p>
+    </section>
+
+    <section id="adminDashboard" class="admin-dashboard" hidden>
+      <header class="admin-topbar">
+        <div class="admin-brand">
+          <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
+          <div>
+            <h1>NullTrace Admin</h1>
+            <p id="adminUpdatedAt">Loading</p>
+          </div>
+        </div>
+        <button id="adminLogoutBtn" class="btn ghost" type="button">Logout</button>
+      </header>
+
+      <nav class="admin-tabs" aria-label="Admin sections">
+        <button class="admin-tab is-active" data-tab="overview" type="button">Overview</button>
+        <button class="admin-tab" data-tab="wallet" type="button">Wallet</button>
+        <button class="admin-tab" data-tab="activity" type="button">Activity</button>
+        <button class="admin-tab" data-tab="generated" type="button">Generated Access</button>
+        <button class="admin-tab" data-tab="generate" type="button">Generate</button>
+      </nav>
+
+      <section class="admin-panel is-active" data-panel="overview">
+        <div id="overviewCards" class="admin-card-grid"></div>
+      </section>
+
+      <section class="admin-panel" data-panel="wallet">
+        <div id="walletPanel" class="admin-card"></div>
+      </section>
+
+      <section class="admin-panel" data-panel="activity">
+        <div class="admin-card">
+          <h2>Daily Activity</h2>
+          <div id="activityTable" class="admin-table"></div>
+        </div>
+      </section>
+
+      <section class="admin-panel" data-panel="generated">
+        <div class="admin-card">
+          <h2>Generated Access</h2>
+          <div id="generatedTable" class="admin-table"></div>
+        </div>
+      </section>
+
+      <section class="admin-panel" data-panel="generate">
+        <div class="admin-card admin-generate">
+          <h2>Generate Free Access</h2>
+          <label for="grantLabel">Label</label>
+          <input id="grantLabel" type="text" autocomplete="off" placeholder="Friend / internal note">
+          <label for="grantDays">Days</label>
+          <input id="grantDays" type="number" min="1" max="36500" value="3650">
+          <button id="generateAccessBtn" class="btn primary" type="button">Generate Keys</button>
+          <p class="small muted">Keys are shown once here. Store them offline before leaving this tab.</p>
+          <div id="generatedKeys" class="admin-key-result" hidden></div>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script src="{{ url_for('static', path='js/admin.js') }}?v={{ uuid }}" defer></script>
+</body>
+</html>

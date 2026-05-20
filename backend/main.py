@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -30,13 +32,16 @@ from .access_security import (
     env_bool,
     env_int,
     generate_order_secret,
+    generate_restore_key,
     generate_session_token,
+    generate_user_key,
     hash_access_key,
     hash_order_secret,
     hash_restore_key,
     hash_session_token,
     isoformat,
     parse_datetime,
+    require_base64_secret,
     safe_error,
     utcnow,
 )
@@ -186,6 +191,8 @@ TOKEN_REQ_LIMIT = 60
 TOKEN_REQ_WINDOW = 60
 TOKEN_TTL_SECONDS = 120
 ROOM_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_-]{6,64}$")
+ADMIN_COOKIE_NAME = "nt_admin_session"
+ADMIN_SESSION_HOURS = 8
 
 token_req_times: dict[str, list[float]] = defaultdict(list)
 client_times_chat: dict[str, list[float]] = defaultdict(list)
@@ -195,6 +202,103 @@ banned_ips: dict[str, float] = {}
 room_replay: dict[str, list[tuple[float, str | None, str | None, str | None, str]]] = defaultdict(list)
 
 _room_tokens: dict[str, dict[str, tuple[float, int]]] = {}
+
+
+def _admin_slug() -> str:
+    return os.getenv("ADMIN_PATH", "").strip().strip("/")
+
+
+def _admin_enabled() -> bool:
+    return bool(_admin_slug() and os.getenv("ADMIN_PASSWORD_HASH", "").strip())
+
+
+def _admin_api_base(slug: str) -> str:
+    return f"/api/admin/{slug}"
+
+
+def _b64decode_relaxed(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _verify_admin_password(password: str) -> bool:
+    encoded = os.getenv("ADMIN_PASSWORD_HASH", "").strip()
+    if not encoded:
+        return False
+    try:
+        algorithm, iterations_raw, salt_raw, expected_raw = encoded.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_raw)
+        salt = _b64decode_relaxed(salt_raw)
+        expected = _b64decode_relaxed(expected_raw)
+        derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(derived, expected)
+    except Exception:
+        return False
+
+
+def _set_admin_cookie(response: Response, request: Request, session_token: str) -> None:
+    response.set_cookie(
+        ADMIN_COOKIE_NAME,
+        session_token,
+        httponly=True,
+        secure=_cookie_secure(request),
+        samesite="strict",
+        max_age=ADMIN_SESSION_HOURS * 3600,
+        path="/",
+    )
+
+
+def _clear_admin_cookie(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        ADMIN_COOKIE_NAME,
+        secure=_cookie_secure(request),
+        samesite="strict",
+        path="/",
+    )
+
+
+def _require_admin_slug(slug: str) -> None:
+    if not _admin_enabled() or not hmac.compare_digest(slug.encode("utf-8"), _admin_slug().encode("utf-8")):
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+def _current_admin_session(request: Request) -> dict[str, Any]:
+    token = request.cookies.get(ADMIN_COOKIE_NAME, "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    session = access_db.get_admin_session_by_hash(hash_session_token(token))
+    if not session or session.get("revoked_at"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    expires_at = parse_datetime(session.get("expires_at"))
+    if not expires_at or expires_at <= utcnow():
+        access_db.revoke_admin_session(int(session["id"]))
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    access_db.update_admin_session_seen(int(session["id"]))
+    return session
+
+
+def _visitor_hash(request: Request, day: str) -> str | None:
+    try:
+        key = require_base64_secret("SESSION_SECRET_BASE64")
+    except Exception:
+        return None
+    ip = _client_ip_from_request(request)
+    ua = request.headers.get("user-agent", "")[:220]
+    lang = request.headers.get("accept-language", "")[:80]
+    raw = f"{day}|{ip}|{ua}|{lang}".encode("utf-8")
+    return hmac.new(key, raw, hashlib.sha256).hexdigest()
+
+
+def _track_page_visit(request: Request) -> None:
+    try:
+        day = utcnow().date().isoformat()
+        access_db.increment_daily_metric("page_views", day=day)
+        visitor_hash = _visitor_hash(request, day)
+        if visitor_hash:
+            access_db.remember_daily_visitor(day, visitor_hash)
+    except Exception:
+        pass
 
 
 def _validate_room_id(room_id: str) -> None:
@@ -353,8 +457,18 @@ class TokenReq(BaseModel):
     room_id: str
 
 
+class AdminLoginReq(BaseModel):
+    password: str
+
+
+class AdminGenerateAccessReq(BaseModel):
+    label: str = ""
+    days: int = 3650
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    _track_page_visit(request)
     devnet_payment_faucet = wallet.devnet_payment_faucet_enabled()
     return templates.TemplateResponse(
         "index.html",
@@ -369,6 +483,189 @@ async def index(request: Request):
 @app.get("/access", response_class=HTMLResponse)
 async def access_page(request: Request):
     return await index(request)
+
+
+@app.get("/{admin_slug}", response_class=HTMLResponse)
+async def admin_page(admin_slug: str, request: Request):
+    _require_admin_slug(admin_slug)
+    response = templates.TemplateResponse(
+        "admin.html",
+        {
+            "request": request,
+            "uuid": uuid4(),
+            "admin_slug": admin_slug,
+            "admin_api_base": _admin_api_base(admin_slug),
+        },
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.post("/api/admin/{admin_slug}/login")
+async def api_admin_login(admin_slug: str, req: AdminLoginReq, request: Request):
+    _require_admin_slug(admin_slug)
+    if not _verify_admin_password(req.password or ""):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = generate_session_token()
+    expires_at = utcnow() + timedelta(hours=ADMIN_SESSION_HOURS)
+    access_db.create_admin_session(hash_session_token(token), expires_at)
+    response = JSONResponse({"status": "ok"})
+    _set_admin_cookie(response, request, token)
+    return response
+
+
+@app.post("/api/admin/{admin_slug}/logout")
+async def api_admin_logout(admin_slug: str, request: Request):
+    _require_admin_slug(admin_slug)
+    response = JSONResponse({"status": "ok"})
+    try:
+        session = _current_admin_session(request)
+        access_db.revoke_admin_session(int(session["id"]))
+    except HTTPException:
+        pass
+    _clear_admin_cookie(response, request)
+    return response
+
+
+def _admin_stats() -> dict[str, Any]:
+    cutoff = isoformat(_session_inactive_cutoff())
+    totals = access_db.fetchone(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM access_accounts WHERE revoked_at IS NULL) AS accounts,
+          (SELECT COUNT(*) FROM access_accounts WHERE plan = 'admin_free' AND revoked_at IS NULL) AS admin_free_accounts,
+          (SELECT COUNT(*) FROM access_sessions WHERE revoked_at IS NULL AND last_heartbeat_at > ?) AS active_sessions,
+          (SELECT COUNT(*) FROM payment_orders) AS payment_orders,
+          (SELECT COUNT(*) FROM payment_orders WHERE status IN ('confirmed','swept')) AS paid_orders,
+          (SELECT COALESCE(SUM(confirmed_balance_lamports), 0) FROM payment_orders WHERE status IN ('confirmed','swept')) AS confirmed_lamports
+        """,
+        (cutoff,),
+    ) or {}
+    metrics = access_db.fetchone(
+        """
+        SELECT
+          COALESCE(SUM(page_views), 0) AS page_views,
+          COALESCE(SUM(unique_visitors), 0) AS unique_visitors,
+          COALESCE(SUM(room_tokens), 0) AS room_tokens,
+          COALESCE(SUM(ws_connections), 0) AS ws_connections,
+          COALESCE(SUM(chat_messages), 0) AS chat_messages,
+          COALESCE(SUM(control_messages), 0) AS control_messages
+        FROM admin_daily_metrics
+        """
+    ) or {}
+    today = access_db.fetchone(
+        "SELECT * FROM admin_daily_metrics WHERE day = ?",
+        (utcnow().date().isoformat(),),
+    ) or {}
+    recent_days = access_db.fetchall(
+        """
+        SELECT day, page_views, unique_visitors, room_tokens, ws_connections, chat_messages, control_messages
+        FROM admin_daily_metrics
+        ORDER BY day DESC
+        LIMIT 14
+        """
+    )
+    recent_accounts = access_db.fetchall(
+        """
+        SELECT
+          a.id, a.plan, a.paid_until, a.created_at, a.revoked_at,
+          (SELECT COUNT(*) FROM access_sessions s WHERE s.account_id = a.id AND s.revoked_at IS NULL AND s.last_heartbeat_at > ?) AS active_sessions,
+          (SELECT MAX(created_at) FROM audit_events e WHERE e.account_id = a.id AND e.event_type IN ('session_created','session_restored')) AS last_used_at
+        FROM access_accounts a
+        ORDER BY a.created_at DESC
+        LIMIT 25
+        """,
+        (cutoff,),
+    )
+    generated = access_db.fetchall(
+        """
+        SELECT
+          a.id, a.plan, a.paid_until, a.created_at,
+          (SELECT COUNT(*) FROM access_sessions s WHERE s.account_id = a.id) AS session_count,
+          (SELECT MAX(created_at) FROM audit_events e WHERE e.account_id = a.id AND e.event_type IN ('session_created','session_restored')) AS last_used_at,
+          (SELECT metadata_json FROM audit_events e WHERE e.account_id = a.id AND e.event_type = 'admin_access_generated' ORDER BY e.created_at DESC LIMIT 1) AS metadata_json
+        FROM access_accounts a
+        WHERE a.plan = 'admin_free'
+        ORDER BY a.created_at DESC
+        LIMIT 50
+        """
+    )
+    return {
+        "totals": totals,
+        "metrics": metrics,
+        "today": today,
+        "recentDays": recent_days,
+        "recentAccounts": recent_accounts,
+        "generatedAccess": generated,
+    }
+
+
+async def _cold_wallet_status() -> dict[str, Any]:
+    address = os.getenv("SOLANA_COLD_WALLET_PUBLIC_KEY", "").strip()
+    if not address:
+        return {"configured": False}
+    try:
+        lamports = await wallet.get_deposit_balance_lamports(address)
+        return {
+            "configured": True,
+            "address": address,
+            "lamports": lamports,
+            "sol": wallet.lamports_to_sol_string(lamports),
+            "network": "devnet" if wallet.use_devnet() else "mainnet",
+        }
+    except Exception as exc:
+        return {"configured": True, "address": address, "error": safe_error(exc)}
+
+
+@app.get("/api/admin/{admin_slug}/dashboard")
+async def api_admin_dashboard(admin_slug: str, request: Request):
+    _require_admin_slug(admin_slug)
+    _current_admin_session(request)
+    payload = _admin_stats()
+    payload["coldWallet"] = await _cold_wallet_status()
+    return payload
+
+
+@app.post("/api/admin/{admin_slug}/generate-access")
+async def api_admin_generate_access(admin_slug: str, req: AdminGenerateAccessReq, request: Request):
+    _require_admin_slug(admin_slug)
+    _current_admin_session(request)
+    days = max(1, min(int(req.days or 3650), 36500))
+    label = (req.label or "").strip()[:80]
+    user_key = generate_user_key()
+    restore_key = generate_restore_key()
+    now = utcnow()
+    paid_until = now + timedelta(days=days)
+    with access_db.db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO access_accounts(
+              user_key_hash, restore_key_hash, plan, paid_until, created_at, updated_at
+            )
+            VALUES (?, ?, 'admin_free', ?, ?, ?)
+            """,
+            (
+                hash_access_key(user_key),
+                hash_restore_key(restore_key),
+                isoformat(paid_until),
+                isoformat(now),
+                isoformat(now),
+            ),
+        )
+        account_id = int(cur.lastrowid)
+        access_db.audit_event(
+            "admin_access_generated",
+            account_id=account_id,
+            metadata={"label": label, "days": days},
+            conn=conn,
+        )
+    return {
+        "accountId": account_id,
+        "userKey": user_key,
+        "restoreKey": restore_key,
+        "paidUntil": isoformat(paid_until),
+    }
 
 
 @app.get("/api/access/plans")
@@ -660,6 +957,7 @@ async def api_room_token(req: TokenReq, request: Request):
 
     token, exp = _issue_room_token(req.room_id, int(account["id"]))
     access_db.update_session_heartbeat(int(session["id"]))
+    access_db.increment_daily_metric("room_tokens")
     return {"token": token, "exp": int(exp)}
 
 
@@ -825,6 +1123,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
 
     await ws.accept(subprotocol=token)
     mgr.add(room_id, ws)
+    access_db.increment_daily_metric("ws_connections")
     connection_cid: str | None = None
     try:
         while True:
@@ -852,6 +1151,10 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 continue
 
             msg = _remember_replay(room_id, msg_type, cid, to, obj, msg)
+            if msg_type == "m":
+                access_db.increment_daily_metric("chat_messages")
+            elif msg_type and msg_type not in {"chaff", "ping"}:
+                access_db.increment_daily_metric("control_messages")
             await mgr.broadcast(room_id, ws, msg)
     except WebSocketDisconnect:
         mgr.remove(room_id, ws)

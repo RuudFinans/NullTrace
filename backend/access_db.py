@@ -239,11 +239,41 @@ def _schema_sql(backend: str) -> str:
           FOREIGN KEY(payment_order_id) REFERENCES payment_orders(id)
         );
 
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+          id {id_type},
+          session_token_hash TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          revoked_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_daily_metrics (
+          day TEXT NOT NULL PRIMARY KEY,
+          page_views INTEGER NOT NULL DEFAULT 0,
+          unique_visitors INTEGER NOT NULL DEFAULT 0,
+          room_tokens INTEGER NOT NULL DEFAULT 0,
+          ws_connections INTEGER NOT NULL DEFAULT 0,
+          chat_messages INTEGER NOT NULL DEFAULT 0,
+          control_messages INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_visit_seen (
+          day TEXT NOT NULL,
+          visitor_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(day, visitor_hash)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_payment_status ON payment_orders(status, expires_at);
         CREATE INDEX IF NOT EXISTS idx_sessions_account ON access_sessions(account_id, revoked_at);
         CREATE INDEX IF NOT EXISTS idx_sessions_token ON access_sessions(session_token_hash);
         CREATE INDEX IF NOT EXISTS idx_audit_account_type ON audit_events(account_id, event_type, created_at);
         CREATE INDEX IF NOT EXISTS idx_sweeps_order_status ON sweeps(payment_order_id, status);
+        CREATE INDEX IF NOT EXISTS idx_admin_sessions_token ON admin_sessions(session_token_hash, revoked_at);
+        CREATE INDEX IF NOT EXISTS idx_admin_visit_seen_day ON admin_visit_seen(day);
         """
 
 
@@ -379,6 +409,86 @@ def revoke_session(session_id: int, reason: str) -> None:
         """,
         (isoformat(utcnow()), reason, session_id),
     )
+
+
+def create_admin_session(session_token_hash: str, expires_at: datetime) -> int:
+    now = isoformat(utcnow())
+    return execute(
+        """
+        INSERT INTO admin_sessions(session_token_hash, created_at, last_seen_at, expires_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (session_token_hash, now, now, isoformat(expires_at)),
+    )
+
+
+def get_admin_session_by_hash(session_token_hash: str) -> dict[str, Any] | None:
+    return fetchone("SELECT * FROM admin_sessions WHERE session_token_hash = ?", (session_token_hash,))
+
+
+def update_admin_session_seen(session_id: int) -> None:
+    execute(
+        "UPDATE admin_sessions SET last_seen_at = ? WHERE id = ?",
+        (isoformat(utcnow()), session_id),
+    )
+
+
+def revoke_admin_session(session_id: int) -> None:
+    execute(
+        "UPDATE admin_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        (isoformat(utcnow()), session_id),
+    )
+
+
+def _ensure_metric_day(conn: DbConnection, day: str) -> None:
+    now = isoformat(utcnow())
+    row = conn.execute("SELECT day FROM admin_daily_metrics WHERE day = ?", (day,)).fetchone()
+    if row:
+        return
+    conn.execute(
+        """
+        INSERT INTO admin_daily_metrics(day, created_at, updated_at)
+        VALUES (?, ?, ?)
+        """,
+        (day, now, now),
+    )
+
+
+def increment_daily_metric(field: str, amount: int = 1, *, day: str | None = None) -> None:
+    allowed = {"page_views", "unique_visitors", "room_tokens", "ws_connections", "chat_messages", "control_messages"}
+    if field not in allowed:
+        raise ValueError("invalid metric field")
+    metric_day = day or utcnow().date().isoformat()
+    with db() as conn:
+        _ensure_metric_day(conn, metric_day)
+        conn.execute(
+            f"UPDATE admin_daily_metrics SET {field} = {field} + ?, updated_at = ? WHERE day = ?",
+            (int(amount), isoformat(utcnow()), metric_day),
+        )
+
+
+def remember_daily_visitor(day: str, visitor_hash: str) -> bool:
+    with db() as conn:
+        _ensure_metric_day(conn, day)
+        exists = conn.execute(
+            "SELECT 1 FROM admin_visit_seen WHERE day = ? AND visitor_hash = ?",
+            (day, visitor_hash),
+        ).fetchone()
+        if exists:
+            return False
+        conn.execute(
+            "INSERT INTO admin_visit_seen(day, visitor_hash, created_at) VALUES (?, ?, ?)",
+            (day, visitor_hash, isoformat(utcnow())),
+        )
+        conn.execute(
+            """
+            UPDATE admin_daily_metrics
+            SET unique_visitors = unique_visitors + 1, updated_at = ?
+            WHERE day = ?
+            """,
+            (isoformat(utcnow()), day),
+        )
+        return True
 
 
 def latest_audit_time(account_id: int, event_type: str) -> datetime | None:
