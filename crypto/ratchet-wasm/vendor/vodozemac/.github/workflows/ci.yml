@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [ main ]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  style:
+    name: Check style
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install rust
+      uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+      with:
+        toolchain: nightly
+        components: rustfmt
+
+    - name: Cargo fmt
+      run: cargo fmt --all -- --check
+
+  typos:
+    name: Spell Check with Typos
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Check the spelling of the files in our repo
+      uses: crate-ci/typos@d43b6c087ac471e2ea7b8af622ff15f05c0c365b
+
+  clippy:
+    name: Run clippy
+    needs: [style]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install rust
+      uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+      with:
+        toolchain: nightly
+        components: clippy
+
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+    - name: Clippy (all-features)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Clippy (no-default-features)
+      run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+  hack:
+    name: Check that each feature compiles independently
+    needs: [style]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+      with:
+        toolchain: stable
+
+    - name: Load cache
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+    - name: Install cargo-hack
+      uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+      with:
+        tool: cargo-hack
+
+    - name: Check that our features compile
+      run: cargo hack check --each-feature --no-dev-deps
+
+    - name: Check that our tests compile for each feature set as well
+      run: cargo hack check --each-feature --all-targets
+
+  test:
+    name: ${{ matrix.target.name }} ${{ matrix.channel }}
+    needs: [clippy]
+
+    runs-on: ${{ matrix.target.os }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      matrix:
+        target: [
+          { "os": "ubuntu-latest",  "toolchain": "x86_64-unknown-linux-gnu", "name": "Linux GNU" },
+          { "os": "macos-15-intel", "toolchain": "x86_64-apple-darwin ",     "name": "macOS x86" },
+          { "os": "macos-latest",   "toolchain": "aarch64-apple-darwin",     "name": "macOS arm" },
+          { "os": "windows-latest", "toolchain": "x86_64-pc-windows-msvc",   "name": "Windows MSVC" },
+        ]
+        channel: [stable, beta, nightly]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: ${{ format('{0}-{1}', matrix.channel, matrix.target.toolchain) }}
+
+      - name: Install nextest
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: nextest
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Test
+        run: cargo nextest run --profile ci --all-features
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        with:
+          use_oidc: true
+          report_type: "test_results"

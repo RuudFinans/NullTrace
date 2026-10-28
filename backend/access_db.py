@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -55,7 +57,8 @@ def _postgres_connect():
         raise RuntimeError("NULLTRACE_DATABASE_URL or DATABASE_URL is required for Postgres")
     if url.startswith("postgres://"):
         url = f"postgresql://{url[len('postgres://'):]}"
-    return psycopg.connect(url, row_factory=dict_row)
+    return psycopg.connect(url, row_factory=dict_row, connect_timeout=5,
+                          options="-c statement_timeout=5000 -c lock_timeout=2000")
 
 
 def _connect():
@@ -78,6 +81,10 @@ class DbCursor:
     def fetchone(self):
         return self._cursor.fetchone()
 
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
     def fetchall(self):
         return self._cursor.fetchall()
 
@@ -92,7 +99,10 @@ class DbConnection:
             return query, False
         prepared = query.replace("?", "%s")
         normalized = prepared.strip().lower()
-        should_return_id = normalized.startswith("insert ") and " returning " not in normalized
+        table = re.match(r"insert\s+into\s+(\w+)", normalized)
+        should_return_id = bool(table and table.group(1) in {
+            "access_accounts", "payment_orders", "access_sessions", "admin_sessions", "sweeps", "audit_events"
+        } and " returning " not in normalized)
         if should_return_id:
             prepared = f"{prepared.rstrip().rstrip(';')} RETURNING id"
         return prepared, should_return_id
@@ -162,10 +172,51 @@ def init_db() -> None:
     with db() as conn:
         conn.executescript(_schema_sql(conn.backend))
         _add_column(conn, "payment_orders", "encrypted_claim_payload", "TEXT")
+        _add_column(conn, "payment_orders", "sweep_lease_until", "TEXT")
+        _add_column(conn, "payment_orders", "sweep_lease_token", "TEXT")
+        if conn.backend == "postgres":
+            # SOL amounts exceed signed 32-bit integers at only ~2.15 SOL.
+            for table, columns in {
+                "payment_orders": ("sol_amount_lamports", "confirmed_balance_lamports"),
+                "sweeps": ("balance_before_lamports", "fee_lamports", "amount_sent_lamports", "balance_after_lamports"),
+            }.items():
+                for column in columns:
+                    row = conn.execute(
+                        "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() "
+                        "AND table_name = ? AND column_name = ?", (table, column),
+                    ).fetchone()
+                    if row and row["data_type"] == "integer":
+                        conn.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE BIGINT")
+
+
+def lock_order(conn: DbConnection, order_id: int) -> dict[str, Any] | None:
+    if conn.backend == "sqlite":
+        conn.execute("BEGIN IMMEDIATE")
+    query = ("SELECT * FROM payment_orders WHERE id = ? FOR UPDATE" if conn.backend == "postgres"
+             else "SELECT * FROM payment_orders WHERE id = ?")
+    return row_to_dict(conn.execute(query, (order_id,)).fetchone())
+
+
+def acquire_sweep_lease(order_id: int) -> str | None:
+    token = secrets.token_urlsafe(32)
+    now = utcnow()
+    with db() as conn:
+        cursor = conn.execute(
+            """UPDATE payment_orders SET sweep_lease_until = ?, sweep_lease_token = ?
+               WHERE id = ? AND (sweep_lease_until IS NULL OR sweep_lease_until < ?)""",
+            (isoformat(now + timedelta(minutes=10)), token, order_id, isoformat(now)),
+        )
+        return token if cursor.rowcount == 1 else None
+
+
+def release_sweep_lease(order_id: int, token: str) -> None:
+    execute("UPDATE payment_orders SET sweep_lease_until = NULL, sweep_lease_token = NULL "
+            "WHERE id = ? AND sweep_lease_token = ?", (order_id, token))
 
 
 def _schema_sql(backend: str) -> str:
     id_type = "SERIAL PRIMARY KEY" if backend == "postgres" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    amount_type = "BIGINT" if backend == "postgres" else "INTEGER"
     return f"""
         CREATE TABLE IF NOT EXISTS access_accounts (
           id {id_type},
@@ -185,12 +236,12 @@ def _schema_sql(backend: str) -> str:
           plan TEXT NOT NULL,
           usd_price REAL NOT NULL,
           sol_usd_rate REAL NOT NULL,
-          sol_amount_lamports INTEGER NOT NULL,
+          sol_amount_lamports {amount_type} NOT NULL,
           deposit_public_key TEXT NOT NULL UNIQUE,
           encrypted_deposit_secret_key TEXT NOT NULL,
           expires_at TEXT NOT NULL,
           confirmed_at TEXT,
-          confirmed_balance_lamports INTEGER,
+          confirmed_balance_lamports {amount_type},
           created_account_id INTEGER,
           encrypted_claim_payload TEXT,
           keys_claimed_at TEXT,
@@ -216,10 +267,10 @@ def _schema_sql(backend: str) -> str:
           payment_order_id INTEGER NOT NULL,
           deposit_public_key TEXT NOT NULL,
           cold_wallet_public_key TEXT NOT NULL,
-          balance_before_lamports INTEGER NOT NULL,
-          fee_lamports INTEGER NOT NULL,
-          amount_sent_lamports INTEGER NOT NULL,
-          balance_after_lamports INTEGER,
+          balance_before_lamports {amount_type} NOT NULL,
+          fee_lamports {amount_type} NOT NULL,
+          amount_sent_lamports {amount_type} NOT NULL,
+          balance_after_lamports {amount_type},
           sweep_signature TEXT,
           status TEXT NOT NULL CHECK(status IN ('pending','swept','failed','dust_unspendable')),
           error TEXT,
@@ -461,8 +512,9 @@ def increment_daily_metric(field: str, amount: int = 1, *, day: str | None = Non
     metric_day = day or utcnow().date().isoformat()
     with db() as conn:
         _ensure_metric_day(conn, metric_day)
+        # Only the field allowlist above supplies identifiers; all values are bound parameters.
         conn.execute(
-            f"UPDATE admin_daily_metrics SET {field} = {field} + ?, updated_at = ? WHERE day = ?",
+            f"UPDATE admin_daily_metrics SET {field} = {field} + ?, updated_at = ? WHERE day = ?",  # nosec B608
             (int(amount), isoformat(utcnow()), metric_day),
         )
 

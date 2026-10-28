@@ -1,0 +1,56 @@
+name: Code coverage
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  code_coverage:
+    name: Code Coverage
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
+      id-token: write
+    if: github.event_name == 'push' || !github.event.pull_request.draft
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        persist-credentials: false
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+      with:
+        toolchain: stable
+
+    - name: Load cache
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+    - name: Install cargo-llvm-cov, nextest, just
+      uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+      with:
+        tool: cargo-llvm-cov,nextest,just
+
+    - name: Create the coverage report
+      run: just coverage-codecov
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+      with:
+        use_oidc: true
+
+    - name: Upload test results to Codecov
+      if: ${{ !cancelled() }}
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+      with:
+        use_oidc: true
+        report_type: "test_results"

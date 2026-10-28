@@ -6,22 +6,23 @@ import logging
 import math
 import os
 import time
-import urllib.parse
-import urllib.request
 from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from typing import Any, Callable
 
+import httpx
+
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.signature import Signature
+from solders.message import Message
+from solders.transaction import Transaction
 from solders.system_program import TransferParams, transfer
 from solana.exceptions import SolanaRpcException
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment
 from solana.rpc.types import TxOpts
-from solana.transaction import Transaction
 
 from . import access_db
 from .access_security import (
@@ -106,7 +107,7 @@ def plan_price_usd(plan: str) -> float:
     cfg = PLAN_CONFIG[plan]
     env_key = cfg["price_env"]
     value = env_float(env_key, float(cfg["default_usd"]))
-    if value is None or value <= 0:
+    if value is None or not math.isfinite(value) or value <= 0:
         raise AccessConfigError(f"{env_key} must be set to a positive number")
     return float(value)
 
@@ -124,9 +125,9 @@ def add_plan_duration(start: datetime, plan: str) -> datetime:
 
 
 def calculate_sol_amount_lamports(usd_price: float, sol_usd_rate: float) -> int:
-    if usd_price <= 0:
+    if not math.isfinite(usd_price) or usd_price <= 0:
         raise ValueError("usd_price must be positive")
-    if sol_usd_rate <= 0:
+    if not math.isfinite(sol_usd_rate) or sol_usd_rate <= 0:
         raise ValueError("sol_usd_rate must be positive")
     lamports = (Decimal(str(usd_price)) / Decimal(str(sol_usd_rate))) * Decimal(LAMPORTS_PER_SOL)
     return int(lamports.to_integral_value(rounding=ROUND_CEILING))
@@ -162,13 +163,19 @@ def _load_keypair(secret_key: bytes) -> Keypair:
 def _fetch_sol_usd_price_sync(provider: str) -> float:
     if provider != "coingecko":
         raise AccessConfigError(f"unsupported SOL_PRICE_PROVIDER: {provider}")
-    params = urllib.parse.urlencode({"ids": "solana", "vs_currencies": "usd"})
-    url = f"https://api.coingecko.com/api/v3/simple/price?{params}"
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    # Fixed HTTPS endpoint, current certifi trust store, no environment proxy or redirects.
+    with httpx.Client(timeout=10, follow_redirects=False, trust_env=False) as client:
+        with client.stream("GET", "https://api.coingecko.com/api/v3/simple/price",
+                           params={"ids": "solana", "vs_currencies": "usd"}) as response:
+            response.raise_for_status()
+            raw = bytearray()
+            for chunk in response.iter_bytes():
+                raw.extend(chunk)
+                if len(raw) > 65536:
+                    raise RuntimeError("Price response is too large")
+            data = json.loads(raw)
     price = float(data.get("solana", {}).get("usd", 0))
-    if price <= 0:
+    if not math.isfinite(price) or price <= 0:
         raise RuntimeError("CoinGecko returned no SOL/USD price")
     return price
 
@@ -191,11 +198,11 @@ async def get_sol_usd_price_cached() -> float:
         return float(price)
     except Exception as exc:
         fallback = env_float("SOL_PRICE_USD_FALLBACK")
-        if fallback and fallback > 0:
+        if fallback and math.isfinite(fallback) and fallback > 0:
             log.warning("SOL price provider failed; using fallback: %s", safe_error(exc))
             _PRICE_CACHE.update(ts=now_ts, usd=fallback)
             return float(fallback)
-        if cached:
+        if cached and now_ts - float(_PRICE_CACHE.get("ts") or 0) < 3600:
             log.warning("SOL price provider failed; using previous cached price: %s", safe_error(exc))
             return float(cached)
         raise
@@ -368,7 +375,6 @@ def _create_account_for_confirmed_order(
 
 
 async def confirm_payment_order_if_funded(order_id: int) -> dict[str, Any]:
-    access_db.init_db()
     order = access_db.get_order(order_id)
     if not order:
         return {"status": "missing"}
@@ -392,9 +398,7 @@ async def confirm_payment_order_if_funded(order_id: int) -> dict[str, Any]:
         }
 
     with access_db.db() as conn:
-        current = access_db.row_to_dict(
-            conn.execute("SELECT * FROM payment_orders WHERE id = ?", (int(order["id"]),)).fetchone()
-        )
+        current = access_db.lock_order(conn, int(order["id"]))
         if not current:
             return {"status": "missing"}
         if current["status"] != "pending":
@@ -442,7 +446,6 @@ def _mark_order_expired(conn, order_id: int, now: datetime) -> None:
 async def poll_pending_payments(*, run_forever: bool = False) -> dict[str, int]:
     totals = {"checked": 0, "confirmed": 0, "expired": 0, "short": 0, "failed": 0}
     while True:
-        access_db.init_db()
         now = utcnow()
         for order in access_db.pending_orders():
             totals["checked"] += 1
@@ -490,7 +493,7 @@ async def estimate_transfer_fee_lamports(
     to_pubkey: Pubkey,
     blockhash,
 ) -> int:
-    tx = Transaction(recent_blockhash=blockhash, fee_payer=from_pubkey).add(
+    instruction = (
         transfer(
             TransferParams(
                 from_pubkey=from_pubkey,
@@ -499,7 +502,8 @@ async def estimate_transfer_fee_lamports(
             )
         )
     )
-    response = await client.get_fee_for_message(tx.compile_message(), commitment=Commitment(payment_finality()))
+    message = Message.new_with_blockhash([instruction], from_pubkey, blockhash)
+    response = await client.get_fee_for_message(message, commitment=Commitment(payment_finality()))
     fee = int(response.value or 0)
     if fee <= 0:
         raise RuntimeError("RPC returned no transfer fee")
@@ -514,7 +518,7 @@ async def send_transfer_lamports(
     lamports: int,
     blockhash,
 ) -> Signature:
-    tx = Transaction(recent_blockhash=blockhash, fee_payer=keypair.pubkey()).add(
+    instruction = (
         transfer(
             TransferParams(
                 from_pubkey=keypair.pubkey(),
@@ -523,16 +527,25 @@ async def send_transfer_lamports(
             )
         )
     )
+    tx = Transaction.new_signed_with_payer([instruction], keypair.pubkey(), [keypair], blockhash)
     response = await client.send_transaction(
         tx,
-        keypair,
         opts=TxOpts(skip_preflight=False, preflight_commitment=payment_finality()),
     )
     return response.value
 
 
 async def sweep_deposit_to_cold(payment_order_id: int) -> dict[str, Any]:
-    access_db.init_db()
+    lease = access_db.acquire_sweep_lease(payment_order_id)
+    if not lease:
+        return {"status": "skipped", "reason": "sweep_in_progress"}
+    try:
+        return await asyncio.wait_for(_sweep_deposit_to_cold(payment_order_id), timeout=480)
+    finally:
+        access_db.release_sweep_lease(payment_order_id, lease)
+
+
+async def _sweep_deposit_to_cold(payment_order_id: int) -> dict[str, Any]:
     if access_db.has_successful_sweep(payment_order_id):
         return {"status": "already_swept", "paymentOrderId": payment_order_id}
 
@@ -548,6 +561,8 @@ async def sweep_deposit_to_cold(payment_order_id: int) -> dict[str, Any]:
 
     secret_key = decrypt_secret_key(order["encrypted_deposit_secret_key"])
     keypair = _load_keypair(secret_key)
+    if str(keypair.pubkey()) != order["deposit_public_key"]:
+        raise AccessConfigError("Encrypted deposit key does not match its wallet")
     cold_pubkey = Pubkey.from_string(cold_wallet)
     min_balance = env_int("SWEEP_MIN_BALANCE_LAMPORTS", 5000)
     max_rounds = 3
@@ -690,7 +705,6 @@ async def sweep_deposit_to_cold(payment_order_id: int) -> dict[str, Any]:
 async def poll_unswept_deposits(*, run_forever: bool = False) -> dict[str, int]:
     totals = {"checked": 0, "swept": 0, "dust": 0, "failed": 0, "skipped": 0}
     while True:
-        access_db.init_db()
         if not env_bool("SWEEP_ENABLED", True):
             if not run_forever:
                 return totals
@@ -710,7 +724,7 @@ async def poll_unswept_deposits(*, run_forever: bool = False) -> dict[str, int]:
                     totals["swept"] += 1
                 elif result["status"] == "dust_unspendable":
                     totals["dust"] += 1
-                elif result["status"] == "already_swept":
+                elif result["status"] in {"already_swept", "skipped"}:
                     totals["skipped"] += 1
                 else:
                     totals["failed"] += 1

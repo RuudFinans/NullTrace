@@ -2,7 +2,7 @@
 // NullTrace Access Capsule Protocol (NT-C1) – med versjon, signert transkript, TTL og padding
 
 import sodium from "libsodium-wrappers";
-import { b64, u8, signDetached, verifyDetached } from "./handshake.js";
+import { b64, u8, signDetached, verifyDetached, SUITE } from "./handshake.js";
 await sodium.ready;
 
 // ───────────────────────────────────────────────────────────────
@@ -13,10 +13,10 @@ const PAD_MAX = 1024;
 const MAX_CAPSULE_BYTES = 4096; // defensiv grense på base64-dekodet JSON
 
 // Versjon/alg – gir oss mulighet til å migrere senere
-const CAPSULE_VER = "NT-C1";
-const CAPSULE_ALG = "Ed25519|X25519+ML-KEM-512";
+const CAPSULE_VER = "NT-C3";
+const CAPSULE_ALG = SUITE;
 const ROOM_RE = /^[A-Za-z0-9_-]{6,64}$/;
-const CID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CLOCK_SKEW_MS = 10 * 1000;
 
 // ───────────────────────────────────────────────────────────────
@@ -93,6 +93,7 @@ export function parseCapsule(str) {
   try {
     if (typeof str !== "string") return null;
     const trimmed = str.trim();
+    if (trimmed.length > 5500) return null;
 
     // Base64 → bytes (defensiv grense)
     const bytes = u8(trimmed);
@@ -110,7 +111,7 @@ export function parseCapsule(str) {
     if (v !== CAPSULE_VER || alg !== CAPSULE_ALG) return null;
     if (typeof room !== "string" || !ROOM_RE.test(room)) return null;
     if (typeof cid !== "string" || !CID_RE.test(cid)) return null;
-    if (typeof iat !== "number" || typeof exp !== "number") return null;
+    if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(exp)) return null;
 
     // TTL-sjekker
     const now = Date.now();
@@ -130,7 +131,7 @@ export function parseCapsule(str) {
     const xPub  = u8(x);
     const pqPub = u8(k);
     if (xPub.length !== sodium.crypto_kx_PUBLICKEYBYTES) return null;
-    if (pqPub.length !== 800) return null;
+    if (pqPub.length !== 1184) return null;
 
     return {
       room,

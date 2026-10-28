@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 
 USER_KEY_PREFIX = "nt_user_"
@@ -70,7 +72,7 @@ def require_base64_secret(key: str, min_bytes: int = 32) -> bytes:
         raise AccessConfigError(f"{key} is required")
     padded = raw + "=" * (-len(raw) % 4)
     try:
-        value = base64.b64decode(padded, validate=False)
+        value = base64.b64decode(padded, validate=True)
     except Exception as exc:
         raise AccessConfigError(f"{key} must be base64") from exc
     if len(value) < min_bytes:
@@ -139,18 +141,27 @@ def _aes_key_from_env(secret_env: str) -> bytes:
 
 
 def encrypt_bytes(plaintext: bytes, secret_env: str) -> str:
-    key = _aes_key_from_env(secret_env)
+    context = f"NullTrace|at-rest|v2|{secret_env}".encode("ascii")
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=context).derive(
+        _aes_key_from_env(secret_env))
     nonce = secrets.token_bytes(12)
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, None)
-    return _b64url(nonce + ciphertext)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, context)
+    return "v2." + _b64url(nonce + ciphertext)
 
 
 def decrypt_bytes(payload: str, secret_env: str) -> bytes:
-    data = _b64url_decode(payload)
-    if len(data) < 13:
+    versioned = payload.startswith("v2.")
+    data = _b64url_decode(payload[3:] if versioned else payload)
+    if len(data) < 28:
         raise AccessConfigError("encrypted payload is malformed")
     nonce, ciphertext = data[:12], data[12:]
-    return AESGCM(_aes_key_from_env(secret_env)).decrypt(nonce, ciphertext, None)
+    key = _aes_key_from_env(secret_env)
+    context = None
+    if versioned:
+        context = f"NullTrace|at-rest|v2|{secret_env}".encode("ascii")
+        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=context).derive(key)
+    # Legacy read support preserves existing encrypted deposit wallets during rollout.
+    return AESGCM(key).decrypt(nonce, ciphertext, context)
 
 
 def encrypt_deposit_secret(secret_key: bytes) -> str:

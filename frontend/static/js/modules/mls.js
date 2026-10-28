@@ -1,161 +1,195 @@
-// frontend/static/js/modules/mls.js – v3 (AAD fix + robust rekey)
+// Historical import name. This is a host-managed ratcheted group, not RFC 9420 MLS.
 import sodium from "libsodium-wrappers";
-import { b64, u8 } from "./handshake.js";
+import { b64, u8, bytes, PROTOCOL_VERSION, signPacket, verifyPacket, validCid } from "./handshake.js";
 import { Group } from "./group.js";
 await sodium.ready;
 
-/**
- * MlsGroup – gruppestyring med automatisk (debouncet) rekey hos initiator.
- * Inkluderer roster-hash (rh) i GK-pakker og i AAD for konsistenssjekk.
- */
 export class MlsGroup extends Group {
-  /**
-   * @param {string} cid
-   * @param {(obj:any)=>void} sendFn
-   * @param {()=>void} readyCb
-   * @param {boolean} isInitiator
-   */
-  constructor(cid, sendFn, readyCb, isInitiator) {
-    super(cid, sendFn, readyCb);
+  constructor(cid, sendFn, readyCb, isInitiator, options) {
+    super(cid, sendFn, readyCb, options);
     this.isInitiator = !!isInitiator;
-    this._rekeyTimer = null;
-    this._rekeyDelayMs = 50; // koalescer flere joins/leaves
+    if (options.hostId) this.identities.set(options.hostCid, options.hostId);
+    this.rosterHash = "";
+    this._latestEnvelopes = new Map();
+    this._lastRequests = new Map();
+    this._lastRekeyAt = 0;
   }
 
-  // ───────────── helpers ─────────────
-  _u8(s){ return new TextEncoder().encode(s); }
-
-  _aadGK(senderCid, epoch, rh){
-    // AAD for gk: inkluder roster-hash når den finnes
-    // (t, cid, s=0, e, rh?) – hold rekkefølgen stabil.
-    const base = { t:"gk", cid: senderCid, s:0, e: epoch };
-    if (rh) base.rh = rh;
-    return this._u8(JSON.stringify(base));
+  _aadGK(message) {
+    return bytes(JSON.stringify(["NullTrace v3 ratchet control", this.room,
+      message.t, message.v, message.cid, message.to, message.e, message.rh]));
   }
 
-  _rosterCids(){
-    // inkluder oss selv + alle peers (sortert for determinisme)
-    const set = new Set([this.cid, ...this.peers.keys()]);
-    return Array.from(set).sort();
+  _roster() {
+    return [...this.identities].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([cid, id]) => ({ cid, id: b64(id) }));
   }
 
-  _rosterHash(){
-    // 16B hash holder som indikator, b64 for wire
-    const data = this._u8(JSON.stringify(this._rosterCids()));
-    const h = sodium.crypto_generichash(16, data);
-    return b64(h);
+  _rosterHash(roster) {
+    return b64(sodium.crypto_generichash(32, bytes(JSON.stringify(roster))));
   }
 
-  _scheduleRekey(){
-    if (!this.isInitiator) return;
-    clearTimeout(this._rekeyTimer);
-    this._rekeyTimer = setTimeout(() => this.rekey(), this._rekeyDelayMs);
+  _sendPacket(packet) {
+    if (this.destroyed || this.send(packet) === false) throw new Error("Ratchet transport closed");
   }
 
-  // ───────────── medlemsendringer ─────────────
-  addMember(peerCid, sharedKey) {
-    this.peers.set(peerCid, sharedKey);
-    this._scheduleRekey();
+  addMember(cid, ratchet, idPub) {
+    this.addPeer(cid, ratchet, idPub);
+    if (this.isInitiator) this.rekey();
   }
 
-  removeMember(peerCid){
-    this.peers.delete(peerCid);
-    this._scheduleRekey();
+  removeMember(cid) {
+    this.peers.get(cid)?.destroy();
+    this.peers.delete(cid);
+    this.identities.delete(cid);
+    this._latestEnvelopes.delete(cid);
+    this._lastRequests.delete(cid);
+    if (this.isInitiator) this.rekey();
   }
 
-  setInitiator(flag){
-    this.isInitiator = !!flag;
-  }
-
-  // ───────────── nøkkelrotasjon ─────────────
-  /**
-   * Rekey med roster-hash i AAD. Overstyrer Group.rekey()
-   */
-  rekey(){
-    if (!this.isInitiator) return;
-
-    this.groupKey = sodium.randombytes_buf(32);
-    this.epoch = (this.epoch | 0) + 1;
-    this.sendSeq = 0;
-    this.recvSeq.clear();
-
-    const rh = this._rosterHash();
-    this.onReady?.();
-
-    for (const [peerCid, sk] of this.peers){
-      const aad = this._aadGK(this.cid, this.epoch, rh);
-      const nonce = sodium.randombytes_buf(
-        sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
-      );
-
-      // ⭐ FIX: riktig parameterrekkefølge – AAD er 2. argument
-      const ek = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
-        this.groupKey,   // plaintext
-        aad,             // AAD   ✅
-        null,            // nsec  ✅
-        nonce,
-        sk
-      );
-
-      this.send({
-        t:   "gk",
-        cid: this.cid,
-        to:  peerCid,
-        e:   this.epoch,
-        rh,                 // roster hash for konsistens
-        n:   b64(nonce),
-        ek:  b64(ek)
-      });
-    }
-  }
-
-  /**
-   * Last inn ny groupKey. Overstyrer Group.loadGK for å støtte rh i AAD
-   * med bakoverkompatibel fallback.
-   */
-  loadGK(msg, mySk) {
-    if (msg.to && msg.to !== this.cid) return;
-
-    // avvis ikke-fremdrift
-    const me = this.epoch | 0;
-    const theirE = msg.e | 0;
-    if (theirE <= me) return;
-
-    const tryDecrypt = (useRh) => {
-      const aad = useRh
-        ? this._aadGK(msg.cid, theirE, msg.rh)
-        : this._aadGK(msg.cid, theirE, undefined);
-      return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
-        null,         // nsec
-        u8(msg.ek),   // ciphertext
-        aad,          // AAD
-        u8(msg.n),    // nonce
-        mySk
-      );
-    };
-
-    let gk = null;
+  rekey() {
+    if (!this.isInitiator || this.destroyed) return false;
+    if (!Number.isSafeInteger(this.epoch + 1)) throw new Error("Epoch exhausted");
+    const seed = sodium.randombytes_buf(32);
+    const epoch = this.epoch + 1;
+    const roster = this._roster();
+    const rh = this._rosterHash(roster);
+    const rosterBytes = bytes(JSON.stringify(roster));
+    // The secret is never base64/JSON encoded: immutable JS strings cannot be wiped.
+    const payload = new Uint8Array(32 + rosterBytes.length);
+    payload.set(seed);
+    payload.set(rosterBytes, 32);
+    const packets = [];
     try {
-      if (typeof msg.rh === "string") {
-        gk = tryDecrypt(true);
-      } else {
-        gk = tryDecrypt(false);
+      for (const [to, ratchet] of this.peers) {
+        const message = { t: "gk", v: PROTOCOL_VERSION, cid: this.cid, to, e: epoch, rh };
+        message.rk = ratchet.encrypt(payload, this._aadGK(message));
+        packets.push(signPacket(message, this.room, this.idPriv));
       }
-    } catch {
-      if (typeof msg.rh === "string") {
-        try { gk = tryDecrypt(false); } catch { /* ignore */ }
+      // Install without firing callbacks: they must not send before the envelopes.
+      this._installKey(seed, epoch, new Map(this.identities), false);
+      this.rosterHash = rh;
+      this._lastRekeyAt = Date.now();
+      for (const packet of packets) {
+        this._latestEnvelopes.set(packet.to, packet); // Ciphertext only; never retain the epoch seed.
+        this._sendPacket(packet);
       }
+      this.onReady?.();
+      return true;
+    } catch (error) {
+      // A partially sent epoch cannot safely continue; never roll ratchets back.
+      this.destroy();
+      throw error;
+    } finally {
+      sodium.memzero(seed);
+      sodium.memzero(payload);
     }
+  }
 
-    if (!gk) return; // kunne ikke dekryptere
+  _control(type) {
+    return { t: type, v: PROTOCOL_VERSION, cid: this.cid, to: this.hostCid,
+      e: this.epoch, rh: this.rosterHash };
+  }
 
-    this.groupKey = gk;
-    this.epoch    = theirE;
-    this.sendSeq  = 0;
-    this.recvSeq.clear();
+  _sendControl(type) {
+    const ratchet = this.peers.get(this.hostCid);
+    if (this.isInitiator || !ratchet || this.destroyed) return false;
+    const message = this._control(type);
+    const payload = bytes(JSON.stringify([type, message.e, message.rh]));
+    try {
+      message.rk = ratchet.encrypt(payload, this._aadGK(message));
+      this._sendPacket(signPacket(message, this.room, this.idPriv));
+      return true;
+    } catch (error) {
+      this.destroy();
+      throw error;
+    } finally { sodium.memzero(payload); }
+  }
+
+  requestKey() {
+    if (this.isInitiator || this.destroyed || !this.peers.has(this.hostCid)) return false;
+    if (this.ready) return this._sendControl("gk_req");
+    // Before its first authenticated epoch, a responder has no sending chain.
+    // A signed bootstrap request can only cause ciphertext retransmission.
+    this._sendPacket(signPacket(this._control("gk_req"), this.room, this.idPriv));
+    return true;
+  }
+
+  handleControl(message) {
+    if (!this.isInitiator || this.destroyed || !["gk_ack", "gk_req"].includes(message?.t) ||
+        message.to !== this.cid || !this.peers.has(message.cid) ||
+        !Number.isSafeInteger(message.e) || message.e < 0 || message.e > this.epoch ||
+        typeof message.rh !== "string" || message.rh.length > 44 ||
+        !verifyPacket(message, this.room, this.identities.get(message.cid))) return false;
+    if (message.t === "gk_req" && message.e === 0 && message.rh === "" && message.rk === undefined) {
+      return this._resend(message.cid);
+    }
+    if (message.e === 0 || typeof message.rk !== "string" || message.rk.length > 14000) return false;
+    const plain = this.peers.get(message.cid).decrypt(message.rk, this._aadGK(message));
+    if (!plain) return false;
+    try {
+      if (sodium.to_string(plain) !== JSON.stringify([message.t, message.e, message.rh])) return false;
+      if (message.t === "gk_req") {
+        if (Date.now() - this._lastRekeyAt >= 800) this.rekey();
+        else this._resend(message.cid);
+      }
+      // ACKs advance the pairwise DH ratchet; they do not recursively rekey.
+      return true;
+    } finally { sodium.memzero(plain); }
+  }
+
+  _resend(cid) {
+    const packet = this._latestEnvelopes.get(cid);
+    const now = Date.now();
+    if (!packet || now - (this._lastRequests.get(cid) ?? -Infinity) < 800) return false;
+    this._lastRequests.set(cid, now);
+    this._sendPacket(packet);
+    return true;
+  }
+
+  loadGK(message) {
+    if (this.isInitiator || this.destroyed || message?.to !== this.cid || message.cid !== this.hostCid ||
+        !Number.isSafeInteger(message.e) || message.e <= this.epoch || message.e <= 0 ||
+        typeof message.rh !== "string" || message.rh.length !== 44 ||
+        typeof message.rk !== "string" || message.rk.length > 14000 ||
+        !verifyPacket(message, this.room, this.identities.get(this.hostCid))) return false;
+    const ratchet = this.peers.get(this.hostCid);
+    if (!ratchet) return false;
+    const plain = ratchet.decrypt(message.rk, this._aadGK(message));
+    if (!plain) return false;
+    let seed;
+    try {
+      if (plain.length <= 32 || plain.length > 8192) return false;
+      const roster = JSON.parse(sodium.to_string(plain.subarray(32)));
+      if (!Array.isArray(roster) || roster.length < 2 || roster.length > 16 ||
+          message.rh !== this._rosterHash(roster)) return false;
+      const identities = new Map();
+      for (const entry of roster) {
+        if (!validCid(entry?.cid) || identities.has(entry.cid)) return false;
+        const identity = u8(entry.id);
+        if (identity.length !== 32) return false;
+        const known = this.identities.get(entry.cid);
+        if (known && !sodium.memcmp(known, identity)) return false;
+        identities.set(entry.cid, identity);
+      }
+      if (!identities.has(this.cid) || !identities.has(this.hostCid)) return false;
+      seed = plain.slice(0, 32);
+      this._installKey(seed, message.e, identities, false);
+      this.rosterHash = message.rh;
+    } catch { return false; }
+    finally {
+      sodium.memzero(plain);
+      if (seed) sodium.memzero(seed);
+    }
+    this._sendControl("gk_ack");
     this.onReady?.();
+    return true;
+  }
 
-    // Forsøk å vise buffrede meldinger for denne epoch
-    this.flush(()=>{});
+  destroy() {
+    super.destroy();
+    this._latestEnvelopes.clear();
+    this._lastRequests.clear();
+    this.rosterHash = "";
   }
 }

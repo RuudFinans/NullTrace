@@ -1,0 +1,29 @@
+[package]
+name = "nulltrace-ratchet"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vodozemac = { version = "=0.11.1", default-features = false, features = ["low-level-api", "experimental-session-config", "wasm_js"] }
+wasm-bindgen = "=0.2.129"
+js-sys = "=0.3.106"
+hkdf = "=0.13.0"
+sha2 = "=0.11.0"
+subtle = "=2.6.1"
+zeroize = { version = "=1.9.0", features = ["alloc"] }
+
+[patch.crates-io]
+vodozemac = { path = "vendor/vodozemac" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

@@ -1,12 +1,11 @@
+# Private environment files; the checked-in example contains placeholders only.
 .env
 .env.*
-.env.example
+!/.env.example
 
 # Local tools / one-off test files
 keygen.py
 decrypt_deposit_key.py
-loginadmintest
-loginadmintest*
 *admintest*
 *_test_local.*
 *.local
@@ -18,15 +17,29 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 *.sqlite
 *.sqlite3
 *.db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
 *.db-wal
 *.db-shm
+*.db-journal
 
 .venv/
+.security-deps/
+.security-tools/
+.hypothesis/
 node_modules/
+
+# Rust build output only. Keep Cargo.lock, sources and browser WASM assets.
+target/
 
 .idea/
 .vscode/

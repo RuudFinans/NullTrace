@@ -10,19 +10,24 @@ import os
 import secrets
 import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketState
 
 from . import access_db, wallet
+from .http_security import (
+    BoundedRateLimiter, SecurityBoundary, client_ip, http_limits,
+    origin_allowed, production, validate_production_config,
+)
 from .access_security import (
     RESTORE_KEY_PREFIX,
     SESSION_COOKIE_NAME,
@@ -60,8 +65,19 @@ log = logging.getLogger("nulltrace.server")
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
+CLIENT_BUILD = hashlib.sha256(b"".join(path.read_bytes() for path in sorted(
+    (ROOT_DIR / "frontend" / "static").rglob("*.js")))).hexdigest()[:16]
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app):
+    await startup()
+    try:
+        yield
+    finally:
+        await shutdown()
+
+
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "frontend" / "static"), name="static")
 templates = Jinja2Templates(directory=ROOT_DIR / "frontend" / "templates")
 
@@ -76,13 +92,14 @@ async def _run_payment_background_loop(name: str, fn) -> None:
             log.info("%s background loop stopped", name)
             raise
         except Exception as exc:
-            log.exception("%s background loop crashed: %s", name, safe_error(exc))
+            log.error("%s background loop crashed: %s", name, safe_error(exc))
             await asyncio.sleep(retry_seconds)
 
 
-@app.on_event("startup")
 async def startup() -> None:
+    validate_production_config()
     access_db.init_db()
+    app.state.security_maintenance = asyncio.create_task(_security_maintenance())
     if env_bool("PAYMENT_BACKGROUND_WORKER_ENABLED", True):
         app.state.payment_background_tasks = [
             asyncio.create_task(_run_payment_background_loop("payment-watch", wallet.poll_pending_payments)),
@@ -94,9 +111,11 @@ async def startup() -> None:
         log.info("payment background worker disabled")
 
 
-@app.on_event("shutdown")
 async def shutdown() -> None:
     tasks = list(getattr(app.state, "payment_background_tasks", []) or [])
+    maintenance = getattr(app.state, "security_maintenance", None)
+    if maintenance:
+        tasks.append(maintenance)
     for task in tasks:
         task.cancel()
     if tasks:
@@ -113,21 +132,37 @@ async def add_security_headers(request: Request, call_next):
         f"script-src 'self' 'nonce-{nonce}' 'wasm-unsafe-eval'; "
         "style-src 'self'; "
         "img-src 'self' data:; "
-        "connect-src 'self' ws: wss:; "
+        "connect-src 'self'; "
         "font-src 'self'; "
         "object-src 'none'; "
-        "base-uri 'self'; "
+        "base-uri 'none'; "
         "form-action 'self'; "
         "frame-ancestors 'none';"
     )
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-    if request.url.path.startswith("/api/"):
+    if request.scope["path"].startswith(("/static/js/", "/static/libs/")):
+        response.headers["Cache-Control"] = "no-cache"
+    if not request.scope["path"].startswith("/static/"):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
     return response
+
+
+app.add_middleware(SecurityBoundary)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_request: Request, exc: RequestValidationError):
+    # Pydantic's default error includes the submitted password/access key.
+    return JSONResponse(status_code=422, content={"detail": [
+        {"loc": e["loc"], "msg": e["msg"], "type": e["type"]} for e in exc.errors()
+    ]}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/manifest.webmanifest", include_in_schema=False)
@@ -164,44 +199,26 @@ async def healthz_head():
 
 
 def _client_ip_from_request(request: Request) -> str:
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "0.0.0.0"
+    return client_ip(request)
 
 
 def _client_ip_from_ws(ws: WebSocket) -> str:
-    xff = ws.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return ws.client.host if ws.client else "0.0.0.0"
-
-
-def _prune_and_check(timestamps: list[float], limit: int, window: int) -> bool:
-    now = time.time()
-    while timestamps and timestamps[0] < now - window:
-        timestamps.pop(0)
-    if len(timestamps) >= limit:
-        return False
-    timestamps.append(now)
-    return True
+    return client_ip(ws)
 
 
 TOKEN_REQ_LIMIT = 60
 TOKEN_REQ_WINDOW = 60
 TOKEN_TTL_SECONDS = 120
 ROOM_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_-]{6,64}$")
+CID_RE = __import__("re").compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 ADMIN_COOKIE_NAME = "nt_admin_session"
 ADMIN_SESSION_HOURS = 8
 
-token_req_times: dict[str, list[float]] = defaultdict(list)
-client_times_chat: dict[str, list[float]] = defaultdict(list)
-client_times_ctrl: dict[str, list[float]] = defaultdict(list)
-client_connect_times: dict[str, list[float]] = defaultdict(list)
-banned_ips: dict[str, float] = {}
 room_replay: dict[str, list[tuple[float, str | None, str | None, str | None, str]]] = defaultdict(list)
 
-_room_tokens: dict[str, dict[str, tuple[float, int]]] = {}
+_room_tokens: dict[str, dict[str, tuple[float, str]]] = {}
+ws_limits = BoundedRateLimiter()
+_admin_password_slots = asyncio.Semaphore(2)
 
 
 def _admin_slug() -> str:
@@ -229,6 +246,8 @@ def _verify_admin_password(password: str) -> bool:
         if algorithm != "pbkdf2_sha256":
             return False
         iterations = int(iterations_raw)
+        if not 100_000 <= iterations <= 2_000_000 or len(password.encode("utf-8")) > 1024:
+            return False
         salt = _b64decode_relaxed(salt_raw)
         expected = _b64decode_relaxed(expected_raw)
         derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
@@ -291,6 +310,8 @@ def _visitor_hash(request: Request, day: str) -> str | None:
 
 
 def _track_page_visit(request: Request) -> None:
+    if not env_bool("NT_VISITOR_METRICS", False):
+        return
     try:
         day = utcnow().date().isoformat()
         access_db.increment_daily_metric("page_views", day=day)
@@ -302,38 +323,56 @@ def _track_page_visit(request: Request) -> None:
 
 
 def _validate_room_id(room_id: str) -> None:
-    if not ROOM_ID_RE.match(room_id):
+    if not ROOM_ID_RE.fullmatch(room_id):
         raise HTTPException(status_code=400, detail="Invalid room id")
 
 
-def _issue_room_token(room_id: str, account_id: int) -> tuple[str, float]:
+def _prune_tokens() -> None:
+    now = time.time()
+    for room, tokens in list(_room_tokens.items()):
+        for token, (expires, _) in list(tokens.items()):
+            if expires <= now:
+                del tokens[token]
+        if not tokens:
+            del _room_tokens[room]
+
+
+def _issue_room_token(room_id: str, session_hash: str) -> tuple[str, float]:
+    _prune_tokens()
+    if sum(saved_hash == session_hash for tokens in _room_tokens.values()
+           for _, saved_hash in tokens.values()) >= 16:
+        raise HTTPException(status_code=429, detail="Too many unused connection tickets")
+    if sum(map(len, _room_tokens.values())) >= 4096:
+        raise HTTPException(status_code=503, detail="Try again later")
     token = secrets.token_urlsafe(32)
     exp = time.time() + TOKEN_TTL_SECONDS
-    _room_tokens.setdefault(room_id, {})[token] = (exp, account_id)
+    _room_tokens.setdefault(room_id, {})[token] = (exp, session_hash)
     return token, exp
 
 
-def _verify_room_token(room_id: str, token: str, consume: bool = True) -> bool:
+def _verify_room_token(room_id: str, token: str, consume: bool = True) -> str | None:
     now = time.time()
     tokens = _room_tokens.get(room_id)
     if not tokens:
-        return False
+        return None
     entry = tokens.get(token)
     for saved_token, (exp, _) in list(tokens.items()):
         if exp <= now:
             tokens.pop(saved_token, None)
     if not entry:
-        return False
-    exp, _account_id = entry
+        return None
+    exp, session_hash = entry
     if exp <= now:
         tokens.pop(token, None)
-        return False
+        return None
     if consume:
         tokens.pop(token, None)
-    return True
+    return session_hash
 
 
 def _cookie_secure(request: Request) -> bool:
+    if production():
+        return True
     default = request.url.scheme == "https"
     return env_bool("SESSION_COOKIE_SECURE", default)
 
@@ -379,6 +418,10 @@ def _current_session(request: Request) -> tuple[dict[str, Any], dict[str, Any]]:
     if not token:
         raise _generic_auth_error()
     session_hash = hash_session_token(token)
+    return _session_for_hash(session_hash)
+
+
+def _session_for_hash(session_hash: str) -> tuple[dict[str, Any], dict[str, Any]]:
     session = access_db.get_session_by_hash(session_hash)
     if not session or session.get("revoked_at"):
         raise _generic_auth_error()
@@ -430,40 +473,42 @@ def _create_session_response(request: Request, account: dict[str, Any]) -> JSONR
     return response
 
 
-class PaymentCreateReq(BaseModel):
-    plan: str
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class PaymentStatusReq(BaseModel):
-    orderId: int | str
-    orderSecret: str
+class PaymentCreateReq(StrictRequest):
+    plan: str = Field(min_length=1, max_length=8)
 
 
-class DevnetFundReq(BaseModel):
-    orderId: int | str
-    orderSecret: str
+class PaymentStatusReq(StrictRequest):
+    orderId: int = Field(gt=0, le=2_147_483_647)
+    orderSecret: str = Field(min_length=1, max_length=128)
 
 
-class SignInReq(BaseModel):
-    userKey: str
+class DevnetFundReq(PaymentStatusReq):
+    pass
 
 
-class RestoreReq(BaseModel):
-    userKey: str
-    restoreKey: str
+class SignInReq(StrictRequest):
+    userKey: str = Field(min_length=1, max_length=128)
 
 
-class TokenReq(BaseModel):
-    room_id: str
+class RestoreReq(SignInReq):
+    restoreKey: str = Field(min_length=1, max_length=128)
 
 
-class AdminLoginReq(BaseModel):
-    password: str
+class TokenReq(StrictRequest):
+    room_id: str = Field(min_length=6, max_length=64)
 
 
-class AdminGenerateAccessReq(BaseModel):
-    label: str = ""
-    days: int = 3650
+class AdminLoginReq(StrictRequest):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AdminGenerateAccessReq(StrictRequest):
+    label: str = Field(default="", max_length=80)
+    days: int = Field(default=3650, ge=1, le=36500)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -471,10 +516,10 @@ async def index(request: Request):
     _track_page_visit(request)
     devnet_payment_faucet = wallet.devnet_payment_faucet_enabled()
     return templates.TemplateResponse(
-        "index.html",
-        {
+        request=request, name="index.html",
+        context={
             "request": request,
-            "uuid": uuid4(),
+            "uuid": CLIENT_BUILD,
             "devnet_payment_faucet": devnet_payment_faucet,
         },
     )
@@ -489,10 +534,10 @@ async def access_page(request: Request):
 async def admin_page(admin_slug: str, request: Request):
     _require_admin_slug(admin_slug)
     response = templates.TemplateResponse(
-        "admin.html",
-        {
+        request=request, name="admin.html",
+        context={
             "request": request,
-            "uuid": uuid4(),
+            "uuid": CLIENT_BUILD,
             "admin_slug": admin_slug,
             "admin_api_base": _admin_api_base(admin_slug),
         },
@@ -505,7 +550,9 @@ async def admin_page(admin_slug: str, request: Request):
 @app.post("/api/admin/{admin_slug}/login")
 async def api_admin_login(admin_slug: str, req: AdminLoginReq, request: Request):
     _require_admin_slug(admin_slug)
-    if not _verify_admin_password(req.password or ""):
+    async with _admin_password_slots:
+        verified = await asyncio.to_thread(_verify_admin_password, req.password)
+    if not verified:
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = generate_session_token()
     expires_at = utcnow() + timedelta(hours=ADMIN_SESSION_HOURS)
@@ -788,12 +835,9 @@ async def api_payment_status(req: PaymentStatusReq, request: Request):
         return {"status": order["status"]}
 
     with access_db.db() as conn:
-        current = access_db.row_to_dict(
-            conn.execute(
-                "SELECT * FROM payment_orders WHERE id = ? AND order_secret_hash = ?",
-                (order_id, hash_order_secret(req.orderSecret)),
-            ).fetchone()
-        )
+        current = access_db.lock_order(conn, order_id)
+        if current and not constant_time_equal(current["order_secret_hash"], hash_order_secret(req.orderSecret)):
+            current = None
         if not current:
             raise HTTPException(status_code=404, detail="Payment order not found")
         if current.get("keys_claimed_at") or not current.get("encrypted_claim_payload"):
@@ -944,18 +988,13 @@ async def api_internal_sweep(request: Request):
 async def api_room_token(req: TokenReq, request: Request):
     _validate_room_id(req.room_id)
     session, account = _current_session(request)
-    client_ip = _client_ip_from_request(request)
-    if not _prune_and_check(token_req_times[client_ip], TOKEN_REQ_LIMIT, TOKEN_REQ_WINDOW):
+    if not ws_limits.allow(f"token:{session['session_token_hash']}", TOKEN_REQ_LIMIT, TOKEN_REQ_WINDOW):
         raise HTTPException(status_code=429, detail="Too many requests")
 
-    origin = request.headers.get("origin", "")
-    scheme = "https" if request.url.scheme == "https" else "http"
-    expected1 = f"{scheme}://{request.url.hostname}"
-    expected2 = f"{expected1}:{request.url.port}" if request.url.port else expected1
-    if origin and origin not in (expected1, expected2):
+    if not origin_allowed(request):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    token, exp = _issue_room_token(req.room_id, int(account["id"]))
+    token, exp = _issue_room_token(req.room_id, session["session_token_hash"])
     access_db.update_session_heartbeat(int(session["id"]))
     access_db.increment_daily_metric("room_tokens")
     return {"token": token, "exp": int(exp)}
@@ -964,24 +1003,67 @@ async def api_room_token(req: TokenReq, request: Request):
 class RoomManager:
     def __init__(self) -> None:
         self.rooms: dict[str, set[WebSocket]] = {}
+        self.connections: dict[WebSocket, dict[str, Any]] = {}
 
-    def add(self, room: str, ws: WebSocket) -> None:
+    def has_capacity(self, room: str, session_hash: str) -> bool:
+        return (len(self.connections) < 128
+                and (room in self.rooms or len(self.rooms) < 64)
+                and len(self.rooms.get(room, ())) < 16
+                and sum(c["session_hash"] == session_hash for c in self.connections.values()) < 8)
+
+    def add(self, room: str, ws: WebSocket, session_hash: str) -> None:
         self.rooms.setdefault(room, set()).add(ws)
+        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=32)
+        self.connections[ws] = {"room": room, "session_hash": session_hash,
+                                "cid": None, "hello": None, "queue": queue,
+                                "writer": asyncio.create_task(self._writer(ws, queue))}
+
+    async def _writer(self, ws: WebSocket, queue: asyncio.Queue[str]) -> None:
+        try:
+            while True:
+                await asyncio.wait_for(ws.send_text(await queue.get()), timeout=5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self.close(ws, 1013)
+
+    async def close(self, ws: WebSocket, code: int) -> None:
+        try:
+            await asyncio.wait_for(ws.close(code=code), timeout=2)
+        except Exception:
+            pass
+
+    def enqueue(self, ws: WebSocket, data: str) -> None:
+        state = self.connections.get(ws)
+        if not state or state.get("closing"):
+            return
+        try:
+            state["queue"].put_nowait(data)
+        except asyncio.QueueFull:
+            state["closing"] = True
+            asyncio.create_task(self.close(ws, 1013))
 
     def remove(self, room: str, ws: WebSocket) -> None:
         self.rooms.get(room, set()).discard(ws)
+        state = self.connections.pop(ws, None)
+        if state:
+            state["writer"].cancel()
+        if not self.rooms.get(room):
+            self.rooms.pop(room, None)
+            room_replay.pop(room, None)
 
-    async def broadcast(self, room: str, sender: WebSocket, data: str) -> None:
+    async def broadcast(self, room: str, sender: WebSocket, data: str, to: str | None = None) -> None:
         for peer in list(self.rooms.get(room, set())):
+            if peer.application_state == WebSocketState.CONNECTING:
+                continue  # Admission is reserved before the asynchronous upgrade finishes.
             if peer.application_state != WebSocketState.CONNECTED:
                 self.remove(room, peer)
                 continue
             if peer is sender:
                 continue
-            try:
-                await peer.send_text(data)
-            except Exception:
-                self.remove(room, peer)
+            if to and self.connections.get(peer, {}).get("cid") != to:
+                continue
+            self.enqueue(peer, data)
 
 
 mgr = RoomManager()
@@ -992,33 +1074,49 @@ CTRL_LIMIT = 120
 CTRL_WINDOW_SECONDS = 10
 CONNECT_LIMIT = 30
 CONNECT_WINDOW_SECONDS = 60
-WS_BAN_SECONDS = 60
-REPLAY_TTL_SECONDS = env_int("NT_REPLAY_TTL_SECONDS", 35)
-MAX_REPLAY_PER_ROOM = env_int("NT_REPLAY_MAX_PER_ROOM", 200)
+REPLAY_TTL_SECONDS = max(0, min(env_int("NT_REPLAY_TTL_SECONDS", 35), 60))
+MAX_REPLAY_PER_ROOM = max(0, min(env_int("NT_REPLAY_MAX_PER_ROOM", 32), 64))
 MAX_MESSAGE_BYTES = 16384
+message_metrics: dict[str, int] = defaultdict(int)
 
 
-def _is_banned(client_ip: str) -> bool:
-    now = time.time()
-    until = banned_ips.get(client_ip)
-    if until and until > now:
-        return True
-    if until and until <= now:
-        banned_ips.pop(client_ip, None)
-    return False
+async def _security_maintenance() -> None:
+    while True:
+        await asyncio.sleep(5)
+        _prune_tokens()
+        http_limits.prune()
+        ws_limits.prune()
+        for room in list(room_replay):
+            _prune_replay(room)
+        # Check idle sockets too: restoring/revoking/expiring access cannot leave a live relay behind.
+        invalid = set()
+        for session_hash in {c["session_hash"] for c in mgr.connections.values()}:
+            try:
+                await asyncio.to_thread(_session_for_hash, session_hash)
+            except Exception:
+                invalid.add(session_hash)
+        for ws, state in list(mgr.connections.items()):
+            if state["session_hash"] in invalid:
+                await mgr.close(ws, 4004)
+        for field, count in list(message_metrics.items()):
+            message_metrics[field] -= count
+            if count:
+                try:
+                    await asyncio.to_thread(access_db.increment_daily_metric, field, count)
+                except Exception as exc:
+                    log.warning("metrics update failed: %s", safe_error(exc))
 
 
 def _is_connect_limited(client_ip: str) -> bool:
-    ok = _prune_and_check(client_connect_times[client_ip], CONNECT_LIMIT, CONNECT_WINDOW_SECONDS)
-    if not ok:
-        banned_ips[client_ip] = time.time() + WS_BAN_SECONDS
-    return not ok
+    return not ws_limits.allow(f"connect:{client_ip}", CONNECT_LIMIT, CONNECT_WINDOW_SECONDS)
 
 
 def _classify_message_kind(msg_text: str) -> str:
     try:
         msg_type = json.loads(msg_text).get("t")
     except Exception:
+        return "chat"
+    if not isinstance(msg_type, str):
         return "chat"
     if msg_type in {"chaff", "ping"}:
         return "bulk"
@@ -1027,13 +1125,13 @@ def _classify_message_kind(msg_text: str) -> str:
     return "ctrl"
 
 
-def _is_rate_limited_message(client_ip: str, msg_text: str) -> bool:
+def _is_rate_limited_message(session_hash: str, msg_text: str) -> bool:
     kind = _classify_message_kind(msg_text)
     if kind == "bulk":
-        return False
+        return not ws_limits.allow(f"bulk:{session_hash}", 60, 10)
     if kind == "ctrl":
-        return not _prune_and_check(client_times_ctrl[client_ip], CTRL_LIMIT, CTRL_WINDOW_SECONDS)
-    return not _prune_and_check(client_times_chat[client_ip], CHAT_LIMIT, CHAT_WINDOW_SECONDS)
+        return not ws_limits.allow(f"ctrl:{session_hash}", CTRL_LIMIT, CTRL_WINDOW_SECONDS)
+    return not ws_limits.allow(f"chat:{session_hash}", CHAT_LIMIT, CHAT_WINDOW_SECONDS)
 
 
 def _is_bulk(msg_text: str) -> bool:
@@ -1046,9 +1144,13 @@ def _is_bulk(msg_text: str) -> bool:
 def _message_meta(msg_text: str) -> tuple[str | None, str | None, str | None, dict[str, Any] | None]:
     try:
         obj = json.loads(msg_text)
-    except Exception:
+    except (ValueError, RecursionError):
+        return None, None, None, None
+    if not isinstance(obj, dict):
         return None, None, None, None
     msg_type = obj.get("t")
+    if not isinstance(msg_type, str):
+        return None, None, None, None
     cid = obj.get("cid") if isinstance(obj.get("cid"), str) and len(obj.get("cid")) <= 64 else None
     to = obj.get("to") if isinstance(obj.get("to"), str) and len(obj.get("to")) <= 64 else None
     return msg_type, cid, to, obj
@@ -1056,9 +1158,11 @@ def _message_meta(msg_text: str) -> tuple[str | None, str | None, str | None, di
 
 def _prune_replay(room: str) -> None:
     cutoff = time.time() - REPLAY_TTL_SECONDS
-    room_replay[room] = [entry for entry in room_replay[room] if entry[0] >= cutoff]
+    room_replay[room] = [entry for entry in room_replay.get(room, []) if entry[0] >= cutoff]
     if len(room_replay[room]) > MAX_REPLAY_PER_ROOM:
         room_replay[room] = room_replay[room][-MAX_REPLAY_PER_ROOM:]
+    if not room_replay[room] or not MAX_REPLAY_PER_ROOM:
+        room_replay.pop(room, None)
 
 
 def _remember_replay(
@@ -1069,11 +1173,11 @@ def _remember_replay(
     obj: dict[str, Any] | None,
     raw: str,
 ) -> str:
-    if msg_type not in {"m", "gk"} or not cid:
+    if msg_type not in {"m", "gk"} or not cid or not REPLAY_TTL_SECONDS or not MAX_REPLAY_PER_ROOM:
         return raw
     now = time.time()
     if obj is not None:
-        obj.setdefault("rt", int(now * 1000))
+        obj["rt"] = int(now * 1000)
         raw = json.dumps(obj, separators=(",", ":"))
     room_replay[room].append((now, msg_type, cid, to, raw))
     _prune_replay(room)
@@ -1082,23 +1186,17 @@ def _remember_replay(
 
 async def _replay_recent(room: str, ws: WebSocket, cid: str) -> None:
     _prune_replay(room)
-    for _ts, msg_type, sender_cid, target_cid, raw in list(room_replay[room]):
+    for _ts, msg_type, sender_cid, target_cid, raw in list(room_replay.get(room, [])):
         if msg_type == "m" and sender_cid == cid:
             continue
         if msg_type == "gk" and target_cid != cid:
             continue
-        try:
-            await ws.send_text(raw)
-        except Exception:
-            break
+        mgr.enqueue(ws, raw)
 
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(ws: WebSocket, room_id: str):
     client_ip = _client_ip_from_ws(ws)
-    if _is_banned(client_ip):
-        await ws.close(code=4001)
-        return
     if _is_connect_limited(client_ip):
         await ws.close(code=4002)
         return
@@ -1108,58 +1206,91 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
         await ws.close(code=4003)
         return
 
-    origin = ws.headers.get("origin", "")
-    scheme = "https" if ws.url.scheme == "wss" else "http"
-    expected1 = f"{scheme}://{ws.url.hostname}"
-    expected2 = f"{expected1}:{ws.url.port}" if ws.url.port else expected1
-    if origin and origin not in (expected1, expected2):
+    if not origin_allowed(ws, required=True):
         await ws.close(code=4003)
         return
 
     token = ws.headers.get("sec-websocket-protocol", "")
-    if not token or not _verify_room_token(room_id, token, consume=True):
+    session_hash = _verify_room_token(room_id, token, consume=True) if len(token) <= 64 else None
+    if not session_hash:
         await ws.close(code=4004)
         return
+    try:
+        _session_for_hash(session_hash)
+    except HTTPException:
+        await ws.close(code=4004)
+        return
+    if not mgr.has_capacity(room_id, session_hash):
+        await ws.close(code=1013)
+        return
 
-    await ws.accept(subprotocol=token)
-    mgr.add(room_id, ws)
-    access_db.increment_daily_metric("ws_connections")
+    # Reserve synchronously after checking capacity: parallel upgrades must not
+    # all observe the same free slot before their first await.
+    mgr.add(room_id, ws, session_hash)
     connection_cid: str | None = None
     try:
+        await asyncio.wait_for(ws.accept(subprotocol=token), timeout=10)
+        message_metrics["ws_connections"] += 1
         while True:
-            msg = await ws.receive_text()
+            event = await asyncio.wait_for(ws.receive(), timeout=90)
+            if event["type"] == "websocket.disconnect":
+                break
+            msg = event.get("text")
+            if not isinstance(msg, str):
+                await mgr.close(ws, 1003)
+                break
             if len(msg.encode("utf-8")) > MAX_MESSAGE_BYTES:
-                try:
-                    await ws.send_text('{"t":"rate","reason":"too_big"}')
-                except Exception:
-                    pass
-                continue
-            if _is_rate_limited_message(client_ip, msg):
-                try:
-                    await ws.send_text('{"t":"rate","reason":"too_fast"}')
-                except Exception:
-                    pass
-                continue
+                await mgr.close(ws, 1009)
+                break
+            # A verified session identifies the sender even when many users share
+            # one Render ingress peer. Reconnecting cannot reset this budget.
+            if _is_rate_limited_message(session_hash, msg):
+                await mgr.close(ws, 4000)
+                break
             if _is_bulk(msg):
                 continue
 
             msg_type, cid, to, obj = _message_meta(msg)
-            if msg_type == "hello" and cid:
+            if (not obj or msg_type not in {"hello", "ct", "gk", "gk_req", "gk_ack", "m", "leave"}
+                    or not isinstance(cid, str) or not CID_RE.fullmatch(cid)):
+                await mgr.close(ws, 1008)
+                break
+            if msg_type == "hello":
+                hello = tuple(obj.get(k) for k in ("x", "k", "id", "sig"))
+                if (any(not isinstance(v, str) for v in hello)
+                        or any(len(v) != size for v, size in zip(hello, (44, 1580, 44, 88)))
+                        or (connection_cid and (cid != connection_cid or mgr.connections[ws]["hello"] != hello))
+                        or any(peer is not ws and state["room"] == room_id and state["cid"] == cid
+                               for peer, state in mgr.connections.items())):
+                    await mgr.close(ws, 1008)
+                    break
+                first_hello = connection_cid is None
                 connection_cid = cid
-                await _replay_recent(room_id, ws, cid)
-            elif msg_type == "leave" and cid != connection_cid:
-                continue
+                mgr.connections[ws].update(cid=cid, hello=hello)
+                if first_hello:
+                    await _replay_recent(room_id, ws, cid)
+            elif not connection_cid or cid != connection_cid:
+                await mgr.close(ws, 1008)
+                break
+            if msg_type == "leave":
+                break
+            if msg_type in {"ct", "gk", "gk_req", "gk_ack"} and (not to or not CID_RE.fullmatch(to)):
+                await mgr.close(ws, 1008)
+                break
 
             msg = _remember_replay(room_id, msg_type, cid, to, obj, msg)
             if msg_type == "m":
-                access_db.increment_daily_metric("chat_messages")
+                message_metrics["chat_messages"] += 1
             elif msg_type and msg_type not in {"chaff", "ping"}:
-                access_db.increment_daily_metric("control_messages")
-            await mgr.broadcast(room_id, ws, msg)
-    except WebSocketDisconnect:
+                message_metrics["control_messages"] += 1
+            await mgr.broadcast(room_id, ws, msg, to)
+    except (WebSocketDisconnect, TimeoutError, RuntimeError):
+        pass
+    finally:
         mgr.remove(room_id, ws)
         if connection_cid:
             await mgr.broadcast(room_id, ws, json.dumps({"t": "leave", "cid": connection_cid}))
+        await mgr.close(ws, 1000)
 
 
 # .venv\Scripts\Activate.ps1

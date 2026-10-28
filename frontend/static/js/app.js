@@ -1,7 +1,8 @@
 // frontend/static/js/app.js – NullTrace Chat v98 (MLS + robust GK + CSP-safe UI)
 
 import sodium from "libsodium-wrappers";
-import { createLocalKeys, handshakeWith, b64, u8 } from "handshake";
+import { createLocalKeys, handshakeWith, b64, u8, createHello, readHello, wipeKeys, wipeBootstrapKeys,
+  verifyPacket, fp4, PROTOCOL_VERSION } from "handshake";
 import { MlsGroup } from "mls";
 import { createCapsule, parseCapsule, CAPSULE_TTL_MS } from "nacp";
 await sodium.ready;
@@ -30,6 +31,7 @@ const GK_REQ_TRIES       = 6;
 
 // Host-side rekey-throttle (beskytter mot gk_req-spam)
 const REKEY_MIN_MS       = 800;
+const REKEY_INTERVAL_MS  = 30000;
 // ───────────────────────────────────────────────────────────────────
 
 function genUUID(){
@@ -64,6 +66,7 @@ Ibtn.disabled = true;
 /* State */
 let inviteInterval=null, deadmanTimer=null, greeted=false, chaffTimer=null, pingTimer=null;
 let reconnectTimer=null, reconnectDelay=RECONNECT_MIN_MS, desiredConnection=false, helloRetryTimer=null, helloRetryCount=0;
+let periodicRekeyTimer=null, connectionGeneration=0;
 let inviteCopyBusy=false;
 const peers=new Map(), pendingRequests=new Map(), usedHues=new Set();
 
@@ -76,6 +79,7 @@ let role=null;
 let capsuleInfo=null;
 let capsuleRaw=null;
 let nextCid = null; // ← NEW: pre-generert ID som vises i confirm og brukes ved join
+let nextKeys = null;
 
 let chatModuleReady = false;
 
@@ -152,6 +156,7 @@ function updateLaunchButtons(){
 }
 
 window.addEventListener("nulltrace:access-unlocked", updateLaunchButtons);
+window.addEventListener("nulltrace:access-locked", ()=>{ wipeSession(); updateLaunchButtons(); });
 
 // Host-side rekey throttle
 let lastRekeyAt = 0;
@@ -160,7 +165,23 @@ function safeRekey(){
   if (!grp) return;
   if (now - lastRekeyAt < REKEY_MIN_MS) return;
   lastRekeyAt = now;
-  grp.rekey();
+  try { grp.rekey(); }
+  catch {
+    wipeSession();
+    addMsg("Key refresh failed. Start a new chat.", "error");
+  }
+}
+
+function schedulePeriodicRekey(){
+  clearTimeout(periodicRekeyTimer);
+  periodicRekeyTimer=null;
+  if(role!=="init" || !grp?.ready || ws?.readyState!==WebSocket.OPEN) return;
+  const group=grp;
+  periodicRekeyTimer=setTimeout(()=>{
+    if(grp!==group || role!=="init" || ws?.readyState!==WebSocket.OPEN) return;
+    safeRekey();
+    schedulePeriodicRekey();
+  }, REKEY_INTERVAL_MS);
 }
 
 /* Helpers */
@@ -184,17 +205,22 @@ function randomColor(){
   return `hsl(${hue},70%,50%)`;
 }
 function sendMessage(obj){
-  if(!ws) return;
+  if(!ws || ws.readyState !== WebSocket.OPEN) return false;
   const msg={...obj};
   const overhead=JSON.stringify(msg).length+8;
   const target=MIN_PACKET_SIZE+Math.floor(Math.random()*(MAX_PACKET_SIZE-MIN_PACKET_SIZE+1));
   const pad=target-overhead;
   if(pad>0) msg.pad=randomString(pad);
-  ws.send(JSON.stringify(msg));
+  const encoded = JSON.stringify(msg);
+  if(new TextEncoder().encode(encoded).length > 16384 || ws.bufferedAmount > 262144) {
+    throw new Error("Message or send queue is too large");
+  }
+  ws.send(encoded);
+  return true;
 }
 function sendHello(){
   if(!ws||ws.readyState!==WebSocket.OPEN||!localKeys) return;
-  sendMessage({ t:"hello", cid:CID, x:b64(localKeys.xPub), k:b64(localKeys.pqPub), id:b64(localKeys.idPub) });
+  sendMessage(createHello(CID, localKeys, R.value.trim()));
 }
 function clearHelloRetry(){
   clearTimeout(helloRetryTimer);
@@ -203,12 +229,12 @@ function clearHelloRetry(){
 }
 function scheduleHelloRetry(){
   if(role!=="resp") return;
-  if(grp&&grp.groupKey){ clearHelloRetry(); return; }
+  if(grp?.ready){ clearHelloRetry(); return; }
   if(helloRetryCount>=HELLO_RETRY_TRIES) return;
   clearTimeout(helloRetryTimer);
   helloRetryTimer=setTimeout(()=>{
     if(role!=="resp"||!ws||ws.readyState!==WebSocket.OPEN) return;
-    if(grp&&grp.groupKey){ clearHelloRetry(); return; }
+    if(grp?.ready){ clearHelloRetry(); return; }
     helloRetryCount++;
     sendHello();
     scheduleHelloRetry();
@@ -268,10 +294,9 @@ function scheduleChaff(){
   const delay=CHAFF_MIN_MS+Math.random()*(CHAFF_MAX_MS-CHAFF_MIN_MS);
   clearTimeout(chaffTimer);
   chaffTimer=setTimeout(()=>{
-    if(!ws||ws.readyState!==WebSocket.OPEN||!grp||!grp.groupKey) return;
-    const n=sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
-    const c=sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(new Uint8Array(),null,null,n,grp.groupKey);
-    sendMessage({t:"chaff",cid:CID,n:b64(n),c:b64(c)});
+    if(!ws||ws.readyState!==WebSocket.OPEN||!grp?.ready) return;
+    // Cover traffic has no message/epoch key and cannot retain an erased seed.
+    sendMessage({t:"chaff",cid:CID,c:b64(sodium.randombytes_buf(64))});
     scheduleChaff();
   }, delay);
 }
@@ -287,6 +312,7 @@ function schedulePing(){
 
 /* Wipe / Deadman / UI helpers */
 function wipeSession(){
+  connectionGeneration++;
   desiredConnection=false;
   resetReconnectBackoff();
   clearHelloRetry();
@@ -300,13 +326,21 @@ function wipeSession(){
   }
   clearTimeout(chaffTimer);
   clearTimeout(pingTimer);
+  clearTimeout(periodicRekeyTimer);
   chaffTimer=pingTimer=null;
+  periodicRekeyTimer=null;
+  lastRekeyAt=0;
 
   for (const {timerId} of gkRetryTimers.values()) clearTimeout(timerId);
   gkRetryTimers.clear();
   pendingGK.clear();
 
   peers.clear(); pendingRequests.clear(); usedHues.clear();
+  grp?.destroy();
+  wipeKeys(localKeys);
+  wipeKeys(nextKeys); nextKeys=null;
+  capsuleRaw=null;
+  ITXT.value=""; PTXT.value="";
   grp=null; greeted=false; role=null; capsuleInfo=null;
   localKeys=null; // ← keep CID as-is; ID bestemmes eksplisitt ved ny start/join
 
@@ -345,7 +379,7 @@ function renderPending(){
   if(role!=="init") return;
   for(const cid of pendingRequests.keys()){
     const li=document.createElement("li");
-    li.textContent=`🔑 Pending: ${cid.slice(0,6)}`;
+    li.textContent=`🔑 Pending: ${cid.slice(0,6)} (${fp4(peers.get(cid).idPub)})`;
     const btn=document.createElement("button");
     btn.textContent="Approve";
     btn.onclick=()=>approvePeer(cid);
@@ -356,11 +390,11 @@ function renderPending(){
 function renderUserList(){
   const c=$("userList");
   c.querySelectorAll(".user-entry").forEach(n=>n.remove());
-  if(role==="resp"&&(!grp||!grp.groupKey)){
+  if(role==="resp"&&!grp?.ready){
     if(peers.has(CID)){
       const p=peers.get(CID), d=document.createElement("div");
       d.className="user-entry"; d.style.color=p.color;
-      d.innerHTML=`<span class="user-icon"></span><span class="user-id">${CID.slice(0,6)}</span>`;
+      setUserLabel(d, CID);
       c.appendChild(d);
     }
     return;
@@ -369,9 +403,15 @@ function renderUserList(){
     const d=document.createElement("div");
     d.className="user-entry"; d.style.color=p.color;
     if(role==="init"&&pendingRequests.has(id)) d.style.opacity="0.5";
-    d.innerHTML=`<span class="user-icon"></span><span class="user-id">${id.slice(0,6)}</span>`;
+    setUserLabel(d, id);
     c.appendChild(d);
   }
+}
+function setUserLabel(element, cid){
+  const icon=document.createElement("span"), label=document.createElement("span");
+  icon.className="user-icon"; label.className="user-id";
+  label.textContent=cid.slice(0,6);
+  element.replaceChildren(icon, label);
 }
 function remainingBurnMs(msg){
   if(typeof msg?.rt !== "number") return null;
@@ -391,39 +431,41 @@ function addMsg(txt, cls="in", fromCid=null, ttlMs=null){
 }
 
 // Abstraksjon så app funker med både Group og MlsGroup
-function addToGroup(peerCid, sk){
-  if (grp && typeof grp.addMember === "function") grp.addMember(peerCid, sk);
-  else if (grp && typeof grp.addPeer === "function") grp.addPeer(peerCid, sk);
+function addToGroup(peerCid, ratchet){
+  grp.addMember(peerCid, ratchet, peers.get(peerCid).idPub);
 }
 
 /* Host approval */
 async function approvePeer(cid){
   const p=peers.get(cid);
-  if(!p){ addMsg("⚠️ Unknown peer to approve","error"); return; }
-  const sk=await handshakeWith(p, localKeys, "init", R.value.trim());
-  sendMessage({t:"ct", cid:CID, to:cid, ct:b64(p.ct), sig:b64(p.sig)});
-  addToGroup(cid, sk);
-  // MLS har debounce, men vi vil ha rask oppstart:
-  safeRekey();
-
-  pendingRequests.delete(cid);
-  renderPending();
-
-  // announce egen + ny + øvrige
-  sendMessage({t:"announce", cid:CID, x:b64(localKeys.xPub), k:b64(localKeys.pqPub), id:b64(localKeys.idPub)});
-  sendMessage({t:"announce", cid,      x:b64(p.xPub),         k:b64(p.pqPub),        id:b64(p.idPub)});
-  for(const [o,oP] of peers){
-    if(o===CID||pendingRequests.has(o)||o===cid) continue;
-    sendMessage({t:"announce", cid:o, x:b64(oP.xPub), k:b64(oP.pqPub), id:b64(oP.idPub)});
+  if(!p || p.approving || role!=="init" || !pendingRequests.has(cid)) return;
+  p.approving=true;
+  const keys=localKeys, group=grp, socket=ws, roomId=R.value.trim();
+  let ratchet;
+  try {
+    ratchet=await handshakeWith(p, keys, "init", roomId, {hostCid:CID,guestCid:cid});
+    if(localKeys!==keys || grp!==group || ws!==socket || peers.get(cid)!==p) {
+      ratchet.destroy(); return;
+    }
+    if(!sendMessage({t:"ct", v:PROTOCOL_VERSION, cid:CID, to:cid,
+      ct:b64(p.ct), rp:b64(p.rp), sig:b64(p.sig)})) throw new Error("Disconnected");
+    addToGroup(cid, ratchet);
+    ratchet=null; // Ownership transferred to the group.
+    pendingRequests.delete(cid);
+    renderPending(); renderUserList();
+    addMsg(`✅ SAS for ${cid.slice(0,6)}: ${p.sas}`,"sys");
+  } catch {
+    ratchet?.destroy();
+    if(grp===group && (group?.destroyed || group?.peers.has(cid))) wipeSession();
+    addMsg("Peer authentication failed. Request a new invitation.", "error");
   }
-  renderUserList();
-  if(p.sas) addMsg(`✅ SAS for ${cid.slice(0,6)}: ${p.sas}`,"sys");
+  finally { p.approving=false; }
 }
 
 /* Ready UI */
 function readyUI(){
   if(!greeted){
-    addMsg(`🔐 Secure channel established.\nPost-quantum handshake • forward secrecy • zero logs`,"sys");
+    addMsg(`🔐 Hybrid encrypted channel established.\nAuthenticated messages • temporary chat`,"sys");
     greeted=true; scheduleChaff();
   }
   S.disabled=false;
@@ -434,8 +476,17 @@ function readyUI(){
   Ibtn.disabled = role!=="init";
   ST.textContent="🔐 Secured";
   grp.flush(txt=>addMsg(txt,"in"));
+  if(role==="resp"){
+    for(const {timerId} of gkRetryTimers.values()) clearTimeout(timerId);
+    gkRetryTimers.clear();
+    for(const id of peers.keys()) if(!grp.identities.has(id)) peers.delete(id);
+    for(const [id, idPub] of grp.identities) {
+      if(!peers.has(id)) peers.set(id, {idPub, color:randomColor()});
+    }
+  }
   if(deadmanToggle.checked) enableDeadman();
   renderUserList();
+  schedulePeriodicRekey();
 }
 
 /* Host start */
@@ -445,7 +496,7 @@ J.onclick=()=>{
     wipeSession();
   }
   CID = genUUID();
-  R.value=genUUID().slice(0,12);
+  R.value=genUUID();
   role="init";
   startChat();
 };
@@ -459,7 +510,7 @@ Ibtn.onclick=()=>{
     INV_COPY.textContent = "Copy";
   }
   ITXT.value=createCapsule(
-    R.value.trim()||genUUID().slice(0,12),
+    R.value.trim()||genUUID(),
     localKeys.xPub, localKeys.pqPub,
     CID, localKeys.idPriv, localKeys.idPub
   );
@@ -514,19 +565,20 @@ POK.onclick=async ()=>{
   const obj=parseCapsule(raw);
   if(!obj){ alert("❌ Invalid or expired capsule"); return; }
   PDL.close();
-  localKeys=localKeys||await createLocalKeys();
+  wipeKeys(nextKeys);
+  nextKeys=await createLocalKeys();
   capsuleInfo=obj;
   capsuleRaw=raw;
   CONF_ROOM.textContent=obj.room;
-  CONF_HOSTFP.textContent=obj.cid.slice(0,6);
+  CONF_HOSTFP.textContent=fp4(obj.idPub);
   nextCid = genUUID(); // ← NEW: pre-generer ID som vises og faktisk brukes etter join
-  CONF_GUESTFP.textContent = nextCid.slice(0,6);
+  CONF_GUESTFP.textContent = fp4(nextKeys.idPub);
   CONFIRMDLG.showModal();
 };
 // NEW: no inline onclick in HTML; bind here instead
 if (P_CANCEL) P_CANCEL.onclick = () => PDL.close();
 
-CONF_CANCEL.onclick=()=>CONFIRMDLG.close();
+CONF_CANCEL.onclick=()=>{ wipeKeys(nextKeys); nextKeys=null; CONFIRMDLG.close(); };
 
 /* Confirm join (guest) */
 CONF_JOIN.onclick=async ()=>{
@@ -546,9 +598,12 @@ CONF_JOIN.onclick=async ()=>{
   if (nextCid) { CID = nextCid; nextCid = null; }
   else { CID = genUUID(); }
 
+  const joiningKeys=nextKeys; nextKeys=null;
   if(ws) wipeSession();
+  else { grp?.destroy(); wipeKeys(localKeys); grp=null; }
 
-  localKeys=await createLocalKeys();
+  localKeys=joiningKeys || await createLocalKeys();
+  capsuleInfo=info;
   role="resp";
   R.value=info.room;
 
@@ -573,13 +628,18 @@ deadmanToggle.addEventListener("change", ()=>{
 /* GK retry (gjest) */
 function scheduleGkRetry(hostCid, attempt=1, delay=GK_REQ_DELAY_MS){
   if(role!=="resp") return;
-  if(grp&&grp.groupKey) return;
+  if(grp?.ready) return;
   const existing=gkRetryTimers.get(hostCid);
   if(existing) clearTimeout(existing.timerId);
 
   const timerId=setTimeout(()=>{
-    if(grp&&grp.groupKey) return;
-    sendMessage({t:"gk_req", cid:CID, to:hostCid});
+    if(grp?.ready || ws?.readyState!==WebSocket.OPEN) return;
+    try { grp?.requestKey(); }
+    catch {
+      wipeSession();
+      addMsg("Key synchronization failed. Request a new invitation.", "error");
+      return;
+    }
     const next=attempt+1;
     if(next<=GK_REQ_TRIES) scheduleGkRetry(hostCid,next, delay*2);
   }, delay);
@@ -591,39 +651,71 @@ function scheduleGkRetry(hostCid, attempt=1, delay=GK_REQ_DELAY_MS){
 async function startChat({resume=false}={}){
   if(ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)) return;
   if(ws) ws=null;
-  if(!R.value.trim()) R.value=genUUID().slice(0,12);
+  const generation=++connectionGeneration;
+  desiredConnection=true;
+  if(!R.value.trim()) R.value=genUUID();
   const roomId=R.value.trim();
-  localKeys=localKeys||await createLocalKeys();
 
-  let token;
+  let token, keys;
   try{
+    if(!localKeys || (resume && role==="resp")){
+      const previous=localKeys;
+      const fresh=await createLocalKeys();
+      if(generation!==connectionGeneration || !desiredConnection){ wipeKeys(fresh); return; }
+      if(previous && resume && role==="resp"){
+        // Keep the identity fingerprint the user compared, but never reuse the
+        // erased bootstrap or old ratchet session when asking for readmission.
+        sodium.memzero(fresh.idPriv);
+        fresh.idPriv=previous.idPriv;
+        fresh.idPub=previous.idPub;
+        previous.idPriv=null; // Identity ownership transfers to the new object.
+        wipeBootstrapKeys(previous);
+        CID=genUUID();
+      }
+      localKeys=fresh;
+    }
+    keys=localKeys;
     token=await getRoomToken(roomId);
   }catch(e){
+    if(generation!==connectionGeneration || !desiredConnection) return;
     addMsg(`🚨 Failed to get room token: ${e.message||e}`,"error");
     if(resume) scheduleReconnect(Math.min(reconnectDelay*=2, RECONNECT_MAX_MS));
     return;
   }
 
-  desiredConnection=true;
+  if(generation!==connectionGeneration || !desiredConnection || localKeys!==keys) return;
   const proto=(location.protocol==="https:")?"wss":"ws";
   ws=new WebSocket(`${proto}://${location.host}/ws/${roomId}`, token);
+  const socket=ws;
 
   ws.onopen=()=>{
+    if(ws!==socket || generation!==connectionGeneration || localKeys!==keys) return;
     resetReconnectBackoff();
     peers.set(CID,{ xPub:localKeys.xPub, pqPub:localKeys.pqPub, idPub:localKeys.idPub, color:randomColor() });
     renderUserList();
     sendHello();
-    if(!grp) grp=new MlsGroup(CID, sendMessage, readyUI, role==="init");
-    else if(grp.groupKey){ readyUI(); scheduleChaff(); }
+    if(!grp) grp=new MlsGroup(CID, sendMessage, readyUI, role==="init", {
+      room:roomId, idPriv:localKeys.idPriv, idPub:localKeys.idPub,
+      hostCid:role==="init" ? CID : capsuleInfo.cid,
+      hostId:role==="init" ? localKeys.idPub : capsuleInfo.idPub
+    });
+    else if(grp.ready){ readyUI(); scheduleChaff(); }
     Ibtn.disabled = role!=="init";
     schedulePing();
-    if(role==="resp"&&(!grp||!grp.groupKey)) scheduleHelloRetry();
+    if(role==="resp"&&!grp?.ready) scheduleHelloRetry();
   };
 
-  ws.onmessage=async ({data})=>{
+  let inbound=Promise.resolve(), queued=0;
+  const handleMessage=async ({data})=>{
+    if(ws!==socket || typeof data!=="string" || data.length>16384) return;
     let m; try{ m=JSON.parse(data);}catch{return;}
+    if(!m || typeof m!=="object" || Array.isArray(m)) return;
 
     if(m.t==="leave"){
+      if(role==="resp" && m.cid===capsuleInfo?.cid){
+        wipeSession(); addMsg("Host disconnected. Request a new invitation.", "sys"); return;
+      }
+      if(role==="init" && grp.peers.has(m.cid)) grp.removeMember(m.cid);
       peers.delete(m.cid);
       pendingRequests.delete(m.cid);
       renderPending(); renderUserList();
@@ -631,59 +723,68 @@ async function startChat({resume=false}={}){
     }
     if(m.t==="hello"){
       if(role==="init"){
-        const knownPeer=peers.has(m.cid)&&!pendingRequests.has(m.cid);
-        peers.set(m.cid,{ xPub:u8(m.x), pqPub:u8(m.k), idPub:u8(m.id), color:randomColor() });
-        if(!knownPeer) pendingRequests.set(m.cid,true);
+        const parsed=readHello(m, roomId);
+        if(!parsed || m.cid===CID) return;
+        const known=peers.get(m.cid);
+        if(known){
+          if(!sodium.memcmp(known.idPub,parsed.idPub) || !sodium.memcmp(known.xPub,parsed.xPub) ||
+             !sodium.memcmp(known.pqPub,parsed.pqPub)) return;
+        } else {
+          if(peers.size>=16) return;
+          peers.set(m.cid,{...parsed,color:randomColor()});
+          pendingRequests.set(m.cid,true);
+        }
         renderPending(); renderUserList();
       }
       return;
     }
-    if(m.t==="announce"){
-      if(m.cid!==CID && !peers.has(m.cid) && !pendingRequests.has(m.cid)){
-        peers.set(m.cid,{ xPub:u8(m.x), pqPub:u8(m.k), idPub:u8(m.id), color:randomColor() });
-        renderUserList();
-      }
-      return;
-    }
-
-    if(m.t==="ct" && role==="resp" && m.to===CID){
+    if(m.t==="ct" && m.v===PROTOCOL_VERSION && role==="resp" && m.to===CID && m.cid===capsuleInfo?.cid){
       const p=peers.get(m.cid);
-      if(!p) return;
+      if(!p || grp.peers.has(m.cid)) return;
       p.ct=u8(m.ct);
-      if(m.sig) p.sig=u8(m.sig);
-      const sk=await handshakeWith(p, localKeys, "resp", R.value.trim());
-      if(p.sig){
-        if(p.sigOK) addMsg(`✅ Verified host ${m.cid.slice(0,6)} (SAS ${p.sas})`,"sys");
-        else addMsg(`⚠️ Could not verify host signature for ${m.cid.slice(0,6)}`,"error");
+      p.rp=u8(m.rp);
+      p.sig=u8(m.sig);
+      const keys=localKeys, group=grp;
+      const ratchet=await handshakeWith(p, keys, "resp", roomId, {hostCid:m.cid,guestCid:CID});
+      if(ws!==socket || localKeys!==keys || grp!==group) { ratchet.destroy(); return; }
+      addMsg(`✅ Verified host ${m.cid.slice(0,6)} (SAS ${p.sas})`,"sys");
+      try { addToGroup(m.cid, ratchet); }
+      catch {
+        ratchet.destroy();
+        wipeSession();
+        addMsg("Ratchet initialization failed. Request a new invitation.", "error");
+        return;
       }
-      addToGroup(m.cid, sk);
       renderUserList();
 
       const buf=pendingGK.get(m.cid);
       if(buf){
-        grp.loadGK(buf, sk);
+        grp.loadGK(buf);
         pendingGK.delete(m.cid);
         renderUserList();
-      } else {
-        scheduleGkRetry(m.cid);
       }
+      if(!grp.ready) scheduleGkRetry(m.cid);
       clearHelloRetry();
       return;
     }
 
-    if(m.t==="gk" && role==="resp"){
-      const sk=grp.peers.get(m.cid);
-      if(sk){
-        grp.loadGK(m, sk);
-        clearHelloRetry();
-        renderUserList();
+    if(m.t==="gk" && role==="resp" && m.to===CID && m.cid===capsuleInfo?.cid){
+      if(!verifyPacket(m, roomId, capsuleInfo.idPub)) return;
+      if(grp.peers.has(m.cid)){
+        if(grp.loadGK(m)){
+          clearHelloRetry();
+          renderUserList();
+        }
       } else {
         pendingGK.set(m.cid, m);
       }
       return;
     }
 
-    if(m.t==="gk_req" && role==="init"){ safeRekey(); return; }
+    if((m.t==="gk_req" || m.t==="gk_ack") && role==="init" && m.to===CID && grp.peers.has(m.cid)){
+      grp.handleControl(m);
+      return;
+    }
 
     if(m.t==="m"){
       const txt=grp.decrypt(m);
@@ -696,16 +797,41 @@ async function startChat({resume=false}={}){
 
     if(m.t==="rate"){ addMsg("⏱️ Slow down a bit…","sys"); return; }
   };
+  socket.onmessage=event=>{
+    if(++queued>64){ socket.close(1008); return; }
+    inbound=inbound.then(()=>handleMessage(event)).catch(()=>{
+      // Invalid unauthenticated packets may be dropped, but a destroyed ratchet
+      // (for example a partially sent epoch or failed ACK) must end the room.
+      if(ws===socket && grp?.destroyed){
+        wipeSession();
+        addMsg("Secure session ended after a key synchronization failure.", "error");
+      }
+    }).finally(()=>queued--);
+  };
 
   ws.onerror=()=>{
     if(!desiredConnection) addMsg("🚨 WebSocket error","error");
   };
   ws.onclose=(ev)=>{
-    const recoverable=![4000,4001,4002,4003,4004,1009].includes(ev.code);
+    if(ws!==socket) return;
+    connectionGeneration++;
+    const recoverable=![4000,4001,4002,4003,4004,1008,1009].includes(ev.code);
     ws=null;
+    // Reconnection is a new membership admission, never a resumption with stale group keys.
+    grp?.destroy(); grp=null; greeted=false;
+    clearHelloRetry();
+    peers.clear(); pendingRequests.clear(); pendingGK.clear();
+    for(const {timerId} of gkRetryTimers.values()) clearTimeout(timerId);
+    gkRetryTimers.clear();
+    if(role==="resp" && capsuleInfo){
+      peers.set(capsuleInfo.cid, {xPub:capsuleInfo.xPub, pqPub:capsuleInfo.pqPub,
+        idPub:capsuleInfo.idPub, color:randomColor()});
+    }
     clearTimeout(chaffTimer);
     clearTimeout(pingTimer);
+    clearTimeout(periodicRekeyTimer);
     chaffTimer=pingTimer=null;
+    periodicRekeyTimer=null;
     S.disabled=true;
     IN.disabled=true;
     disconnectBtn.disabled=!desiredConnection;
@@ -721,18 +847,23 @@ async function startChat({resume=false}={}){
       ST.textContent="Reconnecting";
       scheduleReconnect(reconnectDelay);
       reconnectDelay=Math.min(reconnectDelay*2, RECONNECT_MAX_MS);
-    } else addMsg("🔌 Disconnected","error");
+    } else {
+      wipeSession();
+      addMsg("🔌 Disconnected","error");
+    }
   };
 }
 
 /* Send */
 S.onclick=()=>{
-  if(!grp||!grp.groupKey) return;
+  if(!grp?.ready) return;
   const txt=(IN.value||"").trim();
   if(!txt) return;
-  const pkt=grp.encrypt(txt);
-  if(!pkt) return;
-  sendMessage(pkt);
+  try {
+    const pkt=grp.encrypt(txt);
+    if(!pkt) return;
+    if(!sendMessage(pkt)) throw new Error("Disconnected");
+  } catch { addMsg("Message is too large or connection is busy.", "error"); return; }
   addMsg(txt,"out",CID);
   IN.value="";
 };

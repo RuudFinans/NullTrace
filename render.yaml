@@ -1,0 +1,48 @@
+# One self-contained web service. Existing services can apply these settings manually.
+# Do not create a new empty database when migrating an existing installation.
+services:
+  - type: web
+    name: nulltrace
+    runtime: python
+    plan: starter
+    numInstances: 1
+    buildCommand: pip install --require-hashes -r requirements.txt
+    startCommand: python -m backend.serve
+    healthCheckPath: /healthz
+    disk:
+      name: nulltrace-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.17
+      - key: NT_ENV
+        value: prod
+      - key: SESSION_COOKIE_SECURE
+        value: "1"
+      - key: NT_ALLOWED_ORIGINS
+        sync: false
+      - key: NULLTRACE_DB_BACKEND
+        value: sqlite
+      - key: NULLTRACE_DB_PATH
+        value: /var/data/nulltrace_access.sqlite3
+      - key: ACCESS_KEY_PEPPER_BASE64
+        sync: false
+      - key: SESSION_SECRET_BASE64
+        sync: false
+      - key: DEPOSIT_WALLET_ENCRYPTION_KEY_BASE64
+        sync: false
+      - key: SOL_USE_DEVNET
+        value: "0"
+      - key: DEVNET_PAYMENT_FAUCET_ENABLED
+        value: "0"
+      - key: PAYMENT_FINALITY
+        value: finalized
+      - key: PAYMENT_BACKGROUND_WORKER_ENABLED
+        value: "1"
+      - key: SOLANA_COLD_WALLET_PUBLIC_KEY
+        sync: false
+      - key: SWEEP_ENABLED
+        value: "1"
+      - key: NT_VISITOR_METRICS
+        value: "0"

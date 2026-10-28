@@ -43,9 +43,24 @@ function showGate(screen = "accessLanding", message = "") {
   accessNotice.textContent = message;
   showScreen(screen);
   stopHeartbeat();
+  clearSavedKeyMaterial();
+  window.dispatchEvent(new CustomEvent("nulltrace:access-locked"));
+}
+
+function clearSavedKeyMaterial() {
+  claimedKeys = null;
+  for (const id of ["userKeyField", "restoreKeyField"]) {
+    const field = $(id);
+    keyFieldValues.delete(field);
+    field.textContent = "";
+  }
+  hideBackupCard();
 }
 
 function showApp() {
+  signinUserKey.value = "";
+  signinRestoreKey.value = "";
+  clearSavedKeyMaterial();
   document.body.classList.add("access-unlocked");
   accessShell.hidden = true;
   appShell.hidden = false;

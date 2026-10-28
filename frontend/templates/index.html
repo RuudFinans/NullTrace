@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>NullTrace • Free Speech Rooms</title>
-  <meta name="description" content="NullTrace creates encrypted free speech rooms with no accounts, no telemetry, no message history, temporary capsules, and quantum-ready end-to-end encryption.">
+  <meta name="description" content="NullTrace creates temporary encrypted rooms with signed invite capsules, hybrid X25519 and ML-KEM-768 setup, Double Ratchets, and fresh keys for each message.">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#05070a">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#05070a">
@@ -88,77 +88,77 @@
         <p class="section-lead">Free speech needs more than a policy promise. NullTrace makes the room technically hard to abuse: approve entry, encrypt locally, rotate keys, store no readable history.</p>
         <div class="plain-list">
           <p><strong>Encrypt first.</strong> End-to-end encryption starts locally, before a message leaves your device.</p>
-          <p><strong>Hybrid keys.</strong> X25519 and ML-KEM combine classical speed with post-quantum resilience.</p>
-          <p><strong>Short-lived entry.</strong> Invite capsules are signed, time-limited, and useless once they expire.</p>
+          <p><strong>Hybrid keys.</strong> X25519 and ML-KEM-768 establish session secrets; Double Ratchets refresh epoch delivery keys.</p>
+          <p><strong>Short-lived entry.</strong> Signed invite capsules carry an expiration time and require host approval.</p>
           <p><strong>Approved members.</strong> Participants enter through verified handshakes and fresh room keying.</p>
-          <p><strong>Less traffic leakage.</strong> Padding and encrypted chaff reduce what packet size alone can reveal.</p>
+          <p><strong>Traffic shaping.</strong> Padding and random cover frames add traffic variation; timing remains observable.</p>
           <p><strong>One active session.</strong> Access is limited so quiet account sharing and invisible parallel use get harder.</p>
         </div>
       </div>
 
       <div class="landing-section signal-comparison">
         <h2>Signal Comparison</h2>
-        <p class="section-lead">In modern life, Signal should be the baseline for normal conversations with friends and family. Technology is too advanced, too connected, and too observable for ordinary messaging to be casual anymore. But when something must not become identity, notification, backup, device history, or future evidence, it belongs in NullTrace.</p>
+        <p class="section-lead">Signal and NullTrace serve different workflows. Signal is a persistent messenger; NullTrace focuses on temporary, host-approved browser rooms. Their encryption and retention models differ.</p>
         <div class="comparison-table" role="table" aria-label="NullTrace compared with Signal">
           <div class="comparison-head" role="row">
             <span role="columnheader">Area</span>
-            <span role="columnheader">Signal limit</span>
-            <span role="columnheader">NullTrace advantage</span>
+            <span role="columnheader">Signal</span>
+            <span role="columnheader">NullTrace</span>
             <span role="columnheader">In practice</span>
           </div>
           <div class="comparison-row" role="row">
             <span role="cell">Identity</span>
             <span role="cell">Starts from a phone-number account, with usernames added as a contact layer.</span>
-            <span role="cell">No phone number, no username, no profile, no account identity. Access is controlled by keypairs.</span>
-            <span role="cell">A conversation is not attached to a public handle, SIM card, address book, or reusable social identity.</span>
+            <span role="cell">No phone number or public profile; access uses user and restore keys.</span>
+            <span role="cell">Room identities are separate from phone numbers and address books.</span>
           </div>
           <div class="comparison-row" role="row">
             <span role="cell">Room control</span>
             <span role="cell">Groups live inside a persistent messenger account and contact graph.</span>
             <span role="cell">Rooms are created on demand with signed, temporary invite capsules and explicit approval.</span>
-            <span role="cell">A conversation is a controlled event, not another permanent channel attached to your identity.</span>
+            <span role="cell">Hosts approve membership for each temporary room.</span>
           </div>
           <div class="comparison-row" role="row">
             <span role="cell">Encryption model</span>
-            <span role="cell">Classical messaging encryption built for broad consumer chat.</span>
-            <span role="cell">Hybrid X25519 + ML-KEM handshakes, signed transcripts, epochs, and sealed group-key distribution.</span>
-            <span role="cell">NullTrace pushes harder than standard messaging: it protects the room now and reduces future cryptographic regret.</span>
+            <span role="cell"><a href="https://signal.org/blog/spqr/">PQXDH and the Triple Ratchet</a>, combining the Double Ratchet with post-quantum SPQR.</span>
+            <span role="cell">X25519 + ML-KEM-768 setup, vodozemac Double Ratchet for epoch delivery, and per-message sender chains.</span>
+            <span role="cell">NullTrace's ongoing DH ratchet is classical; Signal also ratchets post-quantum secrets.</span>
           </div>
           <div class="comparison-row" role="row">
             <span role="cell">Message isolation</span>
-            <span role="cell">Built as a persistent messenger where conversation state lives around long-running chats.</span>
-            <span role="cell">Every message is its own sealed AEAD packet with sender, sequence, epoch, nonce, and authenticated metadata.</span>
-            <span role="cell">A previous message cannot be reused to read, replay, or predict the next one.</span>
+            <span role="cell">Ratchets derive fresh message keys and delete earlier keys.</span>
+            <span role="cell">Each sender chain derives a new XChaCha20-Poly1305 key per message; signatures bind sender and packet metadata.</span>
+            <span role="cell">Used keys are erased; a bounded, temporary key cache permits reordered messages.</span>
           </div>
           <div class="comparison-row" role="row">
             <span role="cell">Membership secrecy</span>
             <span role="cell">Group history belongs to the device history and group conversation model.</span>
-            <span role="cell">Room keys rotate by epoch when membership changes, and new members only receive the current room key.</span>
-            <span role="cell">Someone approved later does not get the old room key and cannot decrypt earlier messages.</span>
+            <span role="cell">Fresh epoch seeds go to current members after approval, removal, and periodic rotation.</span>
+            <span role="cell">New members receive no previous epochs. Removed members receive no subsequent epochs.</span>
           </div>
           <div class="comparison-row" role="row">
-            <span role="cell">Anti-forensics</span>
+            <span role="cell">Message retention</span>
             <span role="cell">Device message history, app state, and notifications can leave OS-level residue depending on settings.</span>
             <span role="cell">No push notifications, no inbox archive, no platform notification previews, burn timers, deadman, one-tap wipe.</span>
-            <span role="cell">There is far less for a phone extraction, notification log, backup, or casual inspection to recover.</span>
+            <span role="cell">Burn timers remove visible messages; browser and OS traces are still possible.</span>
           </div>
           <div class="comparison-row" role="row">
             <span role="cell">Server breach</span>
             <span role="cell">A messenger service still has account, device, delivery, and abuse-prevention structure around users.</span>
-            <span role="cell">NullTrace never receives message keys and stores no readable chat history. Relay memory is encrypted and short-lived.</span>
-            <span role="cell">A breached server sees encrypted room traffic and noise, not plaintext or key material that can regenerate messages.</span>
+            <span role="cell">Browsers encrypt content; the relay holds short-lived ciphertext. Access records are stored separately.</span>
+            <span role="cell">Relay data alone cannot decrypt content; compromised browser code can expose it.</span>
           </div>
           <div class="comparison-row" role="row">
             <span role="cell">Server visibility</span>
             <span role="cell">A delivery service for known accounts, devices, and contactable identities.</span>
-            <span role="cell">A pass-through for encrypted room traffic with no readable room archive and no account graph.</span>
-            <span role="cell">The server has less useful structure to preserve, analyze, or hand over.</span>
+            <span role="cell">The relay sees connection and room metadata but does not receive message plaintext or keys.</span>
+            <span role="cell">Encryption protects content; it does not hide connection timing or room membership from the relay.</span>
           </div>
           <div class="comparison-row" role="row">
-            <span role="cell">Free speech fit</span>
-            <span role="cell">The minimum responsible choice for everyday private messaging.</span>
-            <span role="cell">The correct place for conversations that must not leak through accounts, metadata, notifications, or retained history.</span>
-            <span role="cell">For absolute free speech, NullTrace is the stronger and cleaner threat model.</span>
+            <span role="cell">Intended use</span>
+            <span role="cell">Everyday private messaging in a persistent app.</span>
+            <span role="cell">Temporary browser rooms with host approval and no permanent chat archive.</span>
+            <span role="cell">Choose according to room controls, retention needs, and device security.</span>
           </div>
         </div>
       </div>
@@ -179,7 +179,7 @@
         </details>
         <details>
           <summary>How many people can be in a group conversation?</summary>
-          <p>Invite as many people as the room needs. Every approved participant is brought into the encrypted session through the room flow, with membership changes driving fresh key material instead of turning the conversation into a public channel.</p>
+          <p>A room supports up to 16 participants, including the host. Each participant needs host approval, and membership changes trigger fresh epoch keys.</p>
         </details>
       </div>
 
@@ -332,8 +332,8 @@
         </div>
 
         <ul class="hero-points" aria-label="Highlights">
-          <li>Post-quantum hybrid keying</li>
-          <li>Traffic shaping with chaff &amp; padding</li>
+          <li>Hybrid setup &amp; ratcheted message keys</li>
+          <li>Random cover traffic &amp; padding</li>
           <li>Burn timer · Deadman · One-tap wipe</li>
         </ul>
       </div>
@@ -384,43 +384,43 @@
 
       <div class="feature-grid">
         <div class="feature">
-          <h4>PQ-Hybrid from day one</h4>
-          <p>X25519 + ML-KEM-512 for long-term secrecy and post-quantum resilience.</p>
+          <h4>Hybrid session setup</h4>
+          <p>X25519 + ML-KEM-768 bootstrap; ongoing ratchet recovery uses classical X25519.</p>
         </div>
 
         <div class="feature">
           <h4>Identity-bound pairing</h4>
-          <p>Signed handshake transcript + short SAS check to block invisible MITM.</p>
+          <p>Signed transcripts bind participants and the initial ratchet key. Compare SAS through a trusted channel.</p>
         </div>
 
         <div class="feature">
-          <h4>Replay-proof AEAD</h4>
-          <p>XChaCha20-Poly1305 with per-sender sequence &amp; epochs. Strict AAD binds sender/seq/epoch.</p>
+          <h4>Fresh message keys</h4>
+          <p>Advancing sender chains supply one XChaCha20-Poly1305 key per message, with replay checks and signed metadata.</p>
         </div>
 
         <div class="feature">
-          <h4>Smart rekey</h4>
-          <p>Initiator-driven on join/leave. Per-peer sealed GK distribution.</p>
+          <h4>Double Ratchet &amp; epochs</h4>
+          <p>The vodozemac WASM engine protects epoch delivery. Membership changes and periodic rekeys refresh sender chains.</p>
         </div>
 
         <div class="feature">
           <h4>Access capsules</h4>
-          <p>NT-C1 invites: signed, TTL-locked, size-padded. One-time room tokens at the WS edge.</p>
+          <p>NT-C3 invites: signed, time-limited, size-padded. One-time room tokens authorize WebSocket access.</p>
         </div>
 
         <div class="feature">
           <h4>Traffic shaping</h4>
-          <p>Uniform 3–5 KB frames; encrypted chaff; server sinks noise.</p>
+          <p>Randomly padded frames and random cover traffic; larger messages remain larger. The relay discards cover frames.</p>
         </div>
 
         <div class="feature">
-          <h4>Soft rate limits</h4>
-          <p>Per-class quotas (chat / control / bulk). Back-pressure without drops.</p>
+          <h4>Bounded traffic</h4>
+          <p>Message-size limits, session rate limits, and bounded send queues constrain abusive traffic.</p>
         </div>
 
         <div class="feature">
-          <h4>RAM-only</h4>
-          <p>No persistence. No telemetry. Hardened headers &amp; strict CSP.</p>
+          <h4>Temporary chat state</h4>
+          <p>Chat keys and relay ciphertext live in memory; access and payment records are stored separately.</p>
         </div>
 
         <div class="feature">
@@ -435,14 +435,14 @@
 
       <ol class="how-list">
         <li><strong>Host starts a room.</strong> Fresh keys; disposable room ID.</li>
-        <li><strong>Share an invite capsule.</strong> Signed NT-C1, TTL-bound, size-padded (no token inside).</li>
-        <li><strong>Guest pastes &amp; confirms.</strong> Room + short SAS fingerprints for a quick human check.</li>
-        <li><strong>Hybrid handshake.</strong> X25519 + ML-KEM derive a shared secret; initiator signs the transcript.</li>
-        <li><strong>Host approves.</strong> Sends one-shot <code>ct</code>; rekeys and distributes sealed GK.</li>
-        <li><strong>Chat.</strong> AEAD with deterministic nonces; AAD over <code>{type,cid,seq,epoch}</code>.</li>
-        <li><strong>Membership change → new keys.</strong> Debounced rekey; guests can <code>gk_req</code> to resync.</li>
-        <li><strong>Traffic blended.</strong> Frames padded; encrypted chaff runs; server sinks noise.</li>
-        <li><strong>Clean exit.</strong> Burn timer, deadman, wipe. Nothing at rest.</li>
+        <li><strong>Share an invite capsule.</strong> Signed NT-C3, time-limited, size-padded, with no access token inside.</li>
+        <li><strong>Guest pastes &amp; confirms.</strong> Check the room and host fingerprint before joining; compare SAS after pairing.</li>
+        <li><strong>Host approves.</strong> A signed X25519 + ML-KEM-768 handshake authenticates the initial ratchet key.</li>
+        <li><strong>Ratchets deliver epoch keys.</strong> Pairwise Double Ratchets protect fresh seeds; encrypted acknowledgements advance the ratchets.</li>
+        <li><strong>Chat.</strong> XChaCha20-Poly1305 uses a fresh message key and random nonce; signatures authenticate packet metadata.</li>
+        <li><strong>Membership changes refresh keys.</strong> The host also rotates epochs periodically; old epoch chains are erased.</li>
+        <li><strong>Traffic shaping.</strong> Frames receive random padding; random cover frames carry no message keys.</li>
+        <li><strong>Clean exit.</strong> Burn timers remove visible messages; leaving wipes in-memory session keys.</li>
       </ol>
     </section>
 
@@ -470,7 +470,7 @@
 
 <dialog id="pasteDlg" class="dlg" aria-labelledby="paste-title">
   <h3 id="paste-title">Paste capsule</h3>
-  <textarea id="pasteTxt" class="mono" rows="5" placeholder="Paste NT-C1 capsule here…"></textarea>
+  <textarea id="pasteTxt" class="mono" rows="5" placeholder="Paste NT-C3 capsule here…"></textarea>
   <div class="dlg-buttons">
     <button id="pasteOk" class="btn primary" type="button">OK</button>
     <button id="pasteCancelBtn" class="btn" type="button">Cancel</button>

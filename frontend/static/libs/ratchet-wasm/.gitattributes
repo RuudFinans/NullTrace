@@ -1,0 +1,4 @@
+*.js text eol=lf
+*.wasm binary
+SHA256SUMS text eol=lf
+LICENSE.vodozemac text eol=lf
