@@ -55,6 +55,9 @@ const J=$("join"), C=$("capsuleBtn"), Ibtn=$("inviteBtn"), R=$("room"),
       INV_CLOSE=$("inviteCloseBtn"), INV_COPY=$("inviteCopyBtn"), deadmanToggle=$("deadmanToggle"),
       disconnectBtn=$("disconnectBtn"),
       P_CANCEL=$("pasteCancelBtn");          // ← NEW: no inline onclick
+const APP=$("appShell"), ROOM_HINT=$("roomHint"), ROOM_TITLE=$("hero-title"),
+      PASTE_STATUS=$("pasteStatus"), INVITE_FEEDBACK=$("inviteFeedback"),
+      PARTICIPANT_COUNT=$("participantCount"), ROOM_NOTICE=$("roomNotice");
 
 J.disabled = true;
 C.disabled = true;
@@ -68,6 +71,7 @@ let inviteInterval=null, deadmanTimer=null, greeted=false, chaffTimer=null, ping
 let reconnectTimer=null, reconnectDelay=RECONNECT_MIN_MS, desiredConnection=false, helloRetryTimer=null, helloRetryCount=0;
 let periodicRekeyTimer=null, connectionGeneration=0;
 let inviteCopyBusy=false;
+let joinPreviewRequest=0, preparingInvitation=false;
 const peers=new Map(), pendingRequests=new Map(), usedHues=new Set();
 
 // Buffer GK (gjest), + retry-timere
@@ -153,6 +157,51 @@ function updateLaunchButtons(){
   const enabled = chatModuleReady && accessIsUnlocked();
   J.disabled = !enabled;
   C.disabled = !enabled;
+}
+
+function setText(element, text){
+  if(element && element.textContent!==text) element.textContent=text;
+}
+function clearRoomNotice(){
+  setText(ROOM_NOTICE, "");
+  if(ROOM_NOTICE) delete ROOM_NOTICE.dataset.tone;
+}
+function setRoomPresentation(state){
+  const host=role==="init";
+  if(state==="connecting" || state==="reconnecting") clearRoomNotice();
+  APP.dataset.roomState=state;
+  APP.dataset.roomRole=host ? "host" : "guest";
+  const copy={
+    idle: ["A private room. For your people.", "Start a room, or join someone you trust with their invitation.", "Ready to connect"],
+    connecting: [host ? "Opening your room." : "Joining the room.", "Setting up your private connection. Just a moment.", "Connecting"],
+    waiting: ["Waiting for the host.", "Your request is on its way. The host will approve you before the conversation begins.", "Awaiting approval"],
+    ready: [host ? "Your room is ready." : "You're in.", host
+      ? "Share an invitation privately. You decide who joins."
+      : "You're connected. Messages disappear automatically after a short time.", grp?.ready ? "Encrypted" : "Room open"],
+    reconnecting: ["Reconnecting.", host ? "Restoring your room connection." : "Restoring your connection. The host may need to approve you again.", "Reconnecting"]
+  }[state];
+  setText(ROOM_TITLE, copy[0]);
+  setText(ROOM_HINT, copy[1]);
+  setText(ST, copy[2]);
+  J.textContent="Start a room";
+  C.textContent="Join with invite";
+  Ibtn.textContent="Invite people";
+}
+
+function setPasteStatus(message=""){
+  setText(PASTE_STATUS, message);
+  if(PASTE_STATUS){
+    if(message) PASTE_STATUS.dataset.tone="error";
+    else delete PASTE_STATUS.dataset.tone;
+  }
+  PTXT.setAttribute("aria-invalid", message ? "true" : "false");
+}
+
+function clearJoinPreview(){
+  wipeKeys(nextKeys);
+  nextKeys=null;
+  nextCid=null;
+  capsuleRaw=null;
 }
 
 window.addEventListener("nulltrace:access-unlocked", updateLaunchButtons);
@@ -268,18 +317,15 @@ async function getRoomToken(roomId){
   });
 
   if (!res.ok) {
-    // Vis gode feilmeldinger og re-åpne gate ved 401
+    let message="Couldn't open this room. Please try again.";
     if (res.status === 401) {
-      addMsg("Sign in to continue.", "error");
+      message="Sign in to continue.";
     } else if (res.status === 403) {
-      addMsg("⛔ Forbidden (bad origin).", "error");
+      message="This connection isn't allowed. Open NullTrace from its usual address.";
     } else if (res.status === 429) {
-      addMsg("⏱️ Too many requests. Please wait a moment.", "error");
-    } else {
-      const t = await res.text().catch(() => String(res.status));
-      addMsg(`🚨 Token error (${res.status}): ${t}`, "error");
+      message="Too many requests. Please wait a moment.";
     }
-    throw new Error(`Token error ${res.status}`);
+    throw new Error(message);
   }
 
   const { token } = await res.json();
@@ -312,6 +358,7 @@ function schedulePing(){
 
 /* Wipe / Deadman / UI helpers */
 function wipeSession(){
+  clearRoomNotice();
   connectionGeneration++;
   desiredConnection=false;
   resetReconnectBackoff();
@@ -354,7 +401,12 @@ function wipeSession(){
   // deadman kan alltid toggles (ikke disable her)
 
   Ibtn.disabled = true;
-  ST.textContent="";
+  for(const dialog of [IDLG, PDL, CONFIRMDLG]) if(dialog.open) dialog.close();
+  joinPreviewRequest++;
+  preparingInvitation=false;
+  R.value="";
+  setText(PARTICIPANT_COUNT, "0");
+  setRoomPresentation("idle");
 }
 function onVisibilityChange(){
   if(document.hidden){
@@ -379,11 +431,23 @@ function renderPending(){
   if(role!=="init") return;
   for(const cid of pendingRequests.keys()){
     const li=document.createElement("li");
-    li.textContent=`🔑 Pending: ${cid.slice(0,6)} (${fp4(peers.get(cid).idPub)})`;
+    const peer=peers.get(cid);
+    const copy=document.createElement("div"), title=document.createElement("span"), fingerprint=document.createElement("code");
+    copy.className="pending-copy";
+    title.className="pending-title";
+    title.textContent=`Join request · ${cid.slice(0,6)}`;
+    fingerprint.className="pending-fingerprint";
+    fingerprint.textContent=fp4(peer.idPub);
+    fingerprint.title="Compare this fingerprint with your guest through a trusted channel.";
+    copy.append(title, fingerprint);
     const btn=document.createElement("button");
-    btn.textContent="Approve";
+    btn.className="btn primary";
+    btn.type="button";
+    btn.textContent=peer.approving ? "Approving…" : "Approve";
+    btn.disabled=!!peer.approving;
+    btn.setAttribute("aria-label", `Approve participant ${cid.slice(0,6)}`);
     btn.onclick=()=>approvePeer(cid);
-    li.appendChild(btn);
+    li.append(copy, btn);
     pendingList.appendChild(li);
   }
 }
@@ -397,6 +461,7 @@ function renderUserList(){
       setUserLabel(d, CID);
       c.appendChild(d);
     }
+    setText(PARTICIPANT_COUNT, String(c.querySelectorAll(".user-entry").length));
     return;
   }
   for(const [id,p] of peers){
@@ -406,22 +471,39 @@ function renderUserList(){
     setUserLabel(d, id);
     c.appendChild(d);
   }
+  setText(PARTICIPANT_COUNT, String(c.querySelectorAll(".user-entry").length));
 }
 function setUserLabel(element, cid){
   const icon=document.createElement("span"), label=document.createElement("span");
   icon.className="user-icon"; label.className="user-id";
+  element.setAttribute("role", "listitem");
+  icon.setAttribute("aria-hidden", "true");
   label.textContent=cid.slice(0,6);
   element.replaceChildren(icon, label);
+  const description=cid===CID ? "You" : pendingRequests.has(cid) ? "Waiting" : cid===capsuleInfo?.cid ? "Host" : "";
+  if(description){
+    const detail=document.createElement("span");
+    detail.className="user-role";
+    detail.textContent=description;
+    element.appendChild(detail);
+  }
 }
 function remainingBurnMs(msg){
   if(typeof msg?.rt !== "number") return null;
   return Math.max(0, msg.rt + BURN_MAX_MS - Date.now());
 }
 function addMsg(txt, cls="in", fromCid=null, ttlMs=null){
+  if(ROOM_NOTICE && APP.dataset.roomState==="idle" && (cls==="error" || cls==="sys")){
+    setText(ROOM_NOTICE, txt);
+    ROOM_NOTICE.dataset.tone=cls==="error" ? "error" : "info";
+    return;
+  }
   const li=Object.assign(document.createElement("li"),{className:cls});
   if(fromCid&&peers.has(fromCid)) li.style.borderLeftColor=peers.get(fromCid).color;
   li.textContent=txt;
-  const burn=Object.assign(document.createElement("button"),{className:"burn",textContent:"💥"});
+  const burn=Object.assign(document.createElement("button"),{className:"burn",textContent:"×",type:"button"});
+  burn.setAttribute("aria-label", "Remove this message");
+  burn.title="Remove this message";
   burn.onclick=()=>li.remove();
   li.appendChild(burn);
   CH.append(li);
@@ -440,6 +522,7 @@ async function approvePeer(cid){
   const p=peers.get(cid);
   if(!p || p.approving || role!=="init" || !pendingRequests.has(cid)) return;
   p.approving=true;
+  renderPending();
   const keys=localKeys, group=grp, socket=ws, roomId=R.value.trim();
   let ratchet;
   try {
@@ -453,19 +536,19 @@ async function approvePeer(cid){
     ratchet=null; // Ownership transferred to the group.
     pendingRequests.delete(cid);
     renderPending(); renderUserList();
-    addMsg(`✅ SAS for ${cid.slice(0,6)}: ${p.sas}`,"sys");
+    addMsg(`Verification code for ${cid.slice(0,6)}: ${p.sas}`,"sys");
   } catch {
     ratchet?.destroy();
     if(grp===group && (group?.destroyed || group?.peers.has(cid))) wipeSession();
     addMsg("Peer authentication failed. Request a new invitation.", "error");
   }
-  finally { p.approving=false; }
+  finally { p.approving=false; renderPending(); }
 }
 
 /* Ready UI */
 function readyUI(){
   if(!greeted){
-    addMsg(`🔐 Hybrid encrypted channel established.\nAuthenticated messages • temporary chat`,"sys");
+    addMsg("Encrypted room ready. Messages disappear after about 30 seconds.","sys");
     greeted=true; scheduleChaff();
   }
   S.disabled=false;
@@ -474,7 +557,7 @@ function readyUI(){
   deadmanToggle.disabled=false;
 
   Ibtn.disabled = role!=="init";
-  ST.textContent="🔐 Secured";
+  setRoomPresentation("ready");
   grp.flush(txt=>addMsg(txt,"in"));
   if(role==="resp"){
     for(const {timerId} of gkRetryTimers.values()) clearTimeout(timerId);
@@ -507,27 +590,31 @@ Ibtn.onclick=()=>{
   ITXT.disabled = false;                 // re-enable i tilfelle tidligere invite utløp
   if(INV_COPY){
     INV_COPY.disabled = false;
-    INV_COPY.textContent = "Copy";
+    INV_COPY.textContent = "Copy invitation";
   }
+  inviteCopyBusy=false;
+  setText(INVITE_FEEDBACK, "");
   ITXT.value=createCapsule(
     R.value.trim()||genUUID(),
     localKeys.xPub, localKeys.pqPub,
     CID, localKeys.idPriv, localKeys.idPub
   );
   clearInterval(inviteInterval);
-  let rem=CAPSULE_TTL_MS;
+  const expiresAt=Date.now()+CAPSULE_TTL_MS;
   INV_TIMER.textContent="02:00";
   inviteInterval=setInterval(()=>{
-    rem-=1000;
+    const rem=Math.max(0, expiresAt-Date.now());
     if(rem<=0){
       clearInterval(inviteInterval);
       INV_TIMER.textContent="Expired";
       ITXT.disabled=true;
       if(INV_COPY) INV_COPY.disabled=true;
+      setText(INVITE_FEEDBACK, "This invitation expired. Close this window and create a fresh one.");
       return;
     }
-    const m=String(Math.floor(rem/60000)).padStart(2,"00"),
-          s=String(Math.floor((rem%60000)/1000)).padStart(2,"00");
+    const seconds=Math.ceil(rem/1000);
+    const m=String(Math.floor(seconds/60)).padStart(2,"00"),
+          s=String(seconds%60).padStart(2,"00");
     INV_TIMER.textContent=`${m}:${s}`;
   },1000);
   IDLG.showModal();
@@ -538,11 +625,20 @@ async function copyInviteCapsule(){
   const capsule=ITXT.value;
   if(!capsule) return;
   inviteCopyBusy=true;
+  INV_COPY.disabled=true;
+  INV_COPY.textContent="Copying…";
   const copied=await writeClipboardText(capsule);
+  if(!IDLG.open || ITXT.value!==capsule) return;
+  if(ITXT.disabled){ inviteCopyBusy=false; INV_COPY.textContent="Copy invitation"; return; }
   INV_COPY.textContent=copied ? "Copied" : "Copy failed";
+  setText(INVITE_FEEDBACK, copied
+    ? "Invitation copied. Send it privately to your guest."
+    : "Copy wasn't available. Select the invitation above and copy it manually.");
   setTimeout(()=>{
+    if(!IDLG.open || ITXT.value!==capsule) return;
     inviteCopyBusy=false;
-    if(INV_COPY&&!INV_COPY.disabled) INV_COPY.textContent="Copy";
+    INV_COPY.disabled=ITXT.disabled;
+    if(!INV_COPY.disabled) INV_COPY.textContent="Copy invitation";
   }, 1200);
 }
 INV_COPY.addEventListener("click", ev=>{
@@ -557,28 +653,83 @@ function closeInviteDialog(ev){
   if(IDLG.open) IDLG.close();
 }
 INV_CLOSE.addEventListener("click", closeInviteDialog);
+IDLG.addEventListener("close", ()=>{
+  clearInterval(inviteInterval);
+  inviteCopyBusy=false;
+  ITXT.value="";
+});
 
 /* Guest paste & confirm */
-C.onclick=()=>PDL.showModal();
+C.onclick=()=>{
+  clearRoomNotice();
+  clearJoinPreview();
+  setPasteStatus();
+  PDL.showModal();
+  requestAnimationFrame(()=>PTXT.focus({preventScroll:true}));
+};
+PTXT.addEventListener("input", ()=>setPasteStatus());
 POK.onclick=async ()=>{
+  if(preparingInvitation) return;
   const raw=PTXT.value.trim();
   const obj=parseCapsule(raw);
-  if(!obj){ alert("❌ Invalid or expired capsule"); return; }
-  PDL.close();
-  wipeKeys(nextKeys);
-  nextKeys=await createLocalKeys();
-  capsuleInfo=obj;
-  capsuleRaw=raw;
-  CONF_ROOM.textContent=obj.room;
-  CONF_HOSTFP.textContent=fp4(obj.idPub);
-  nextCid = genUUID(); // ← NEW: pre-generer ID som vises og faktisk brukes etter join
-  CONF_GUESTFP.textContent = fp4(nextKeys.idPub);
-  CONFIRMDLG.showModal();
+  if(!obj){
+    setPasteStatus(raw ? "This invitation is invalid or has expired. Ask the host for a new one." : "Paste an invitation from your host to continue.");
+    PTXT.focus({preventScroll:true});
+    return;
+  }
+  setPasteStatus();
+  preparingInvitation=true;
+  const request=++joinPreviewRequest;
+  POK.disabled=true;
+  POK.textContent="Checking invitation…";
+  PDL.setAttribute("aria-busy", "true");
+  let keys;
+  try {
+    keys=await createLocalKeys();
+    if(request!==joinPreviewRequest || !PDL.open) return;
+    wipeKeys(nextKeys);
+    nextKeys=keys;
+    keys=null;
+    capsuleInfo=obj;
+    capsuleRaw=raw;
+    CONF_ROOM.textContent=obj.room;
+    CONF_HOSTFP.textContent=fp4(obj.idPub);
+    nextCid=genUUID();
+    CONF_GUESTFP.textContent=fp4(nextKeys.idPub);
+    PTXT.value="";
+    PDL.close();
+    CONFIRMDLG.showModal();
+    requestAnimationFrame(()=>CONF_JOIN.focus({preventScroll:true}));
+  } catch {
+    if(request===joinPreviewRequest && PDL.open) setPasteStatus("Couldn't prepare your invitation. Please try again.");
+  } finally {
+    wipeKeys(keys);
+    if(request===joinPreviewRequest){
+      preparingInvitation=false;
+      POK.disabled=false;
+      POK.textContent="Review invitation";
+      PDL.removeAttribute("aria-busy");
+    }
+  }
 };
 // NEW: no inline onclick in HTML; bind here instead
 if (P_CANCEL) P_CANCEL.onclick = () => PDL.close();
+PDL.addEventListener("close", ()=>{
+  joinPreviewRequest++;
+  preparingInvitation=false;
+  POK.disabled=false;
+  POK.textContent="Review invitation";
+  PDL.removeAttribute("aria-busy");
+  PTXT.value="";
+});
 
-CONF_CANCEL.onclick=()=>{ wipeKeys(nextKeys); nextKeys=null; CONFIRMDLG.close(); };
+CONF_CANCEL.onclick=()=>CONFIRMDLG.close();
+CONFIRMDLG.addEventListener("close", ()=>{
+  clearJoinPreview();
+  if(APP.dataset.roomState==="idle" && accessIsUnlocked() && !PDL.open){
+    requestAnimationFrame(()=>C.focus({preventScroll:true}));
+  }
+});
 
 /* Confirm join (guest) */
 CONF_JOIN.onclick=async ()=>{
@@ -587,7 +738,9 @@ CONF_JOIN.onclick=async ()=>{
     capsuleInfo=null;
     capsuleRaw=null;
     CONFIRMDLG.close();
-    alert("❌ Invite capsule expired. Ask the host for a new one.");
+    setPasteStatus("This invitation expired. Ask the host for a new one.");
+    PDL.showModal();
+    requestAnimationFrame(()=>PTXT.focus({preventScroll:true}));
     return;
   }
   capsuleInfo=info;
@@ -653,6 +806,8 @@ async function startChat({resume=false}={}){
   if(ws) ws=null;
   const generation=++connectionGeneration;
   desiredConnection=true;
+  setRoomPresentation(resume ? "reconnecting" : "connecting");
+  disconnectBtn.disabled=false;
   if(!R.value.trim()) R.value=genUUID();
   const roomId=R.value.trim();
 
@@ -678,7 +833,8 @@ async function startChat({resume=false}={}){
     token=await getRoomToken(roomId);
   }catch(e){
     if(generation!==connectionGeneration || !desiredConnection) return;
-    addMsg(`🚨 Failed to get room token: ${e.message||e}`,"error");
+    if(!resume) wipeSession();
+    addMsg(e.message || "Couldn't open this room. Please try again.","error");
     if(resume) scheduleReconnect(Math.min(reconnectDelay*=2, RECONNECT_MAX_MS));
     return;
   }
@@ -701,6 +857,7 @@ async function startChat({resume=false}={}){
     });
     else if(grp.ready){ readyUI(); scheduleChaff(); }
     Ibtn.disabled = role!=="init";
+    setRoomPresentation(role==="init" || grp?.ready ? "ready" : "waiting");
     schedulePing();
     if(role==="resp"&&!grp?.ready) scheduleHelloRetry();
   };
@@ -747,7 +904,7 @@ async function startChat({resume=false}={}){
       const keys=localKeys, group=grp;
       const ratchet=await handshakeWith(p, keys, "resp", roomId, {hostCid:m.cid,guestCid:CID});
       if(ws!==socket || localKeys!==keys || grp!==group) { ratchet.destroy(); return; }
-      addMsg(`✅ Verified host ${m.cid.slice(0,6)} (SAS ${p.sas})`,"sys");
+      addMsg(`Host ${m.cid.slice(0,6)} · verification code: ${p.sas}`,"sys");
       try { addToGroup(m.cid, ratchet); }
       catch {
         ratchet.destroy();
@@ -834,17 +991,23 @@ async function startChat({resume=false}={}){
     periodicRekeyTimer=null;
     S.disabled=true;
     IN.disabled=true;
+    Ibtn.disabled=true;
     disconnectBtn.disabled=!desiredConnection;
     if(!desiredConnection) return;
 
-    if(ev.code===4000) addMsg("🚫 You are sending messages too fast.","error");
-    else if(ev.code===4001) addMsg("🚫 You are temporarily banned. Please try again later.","error");
-    else if(ev.code===4002) addMsg("⚠️ Too many connection attempts. Slow down!","error");
-    else if(ev.code===4003) addMsg("⛔ Policy violation / bad origin / invalid room.","error");
-    else if(ev.code===4004) addMsg("🔒 Unauthorized: missing/invalid room token.","error");
-    else if(ev.code===1009) addMsg("📦 Message too big.","error");
-    else if(desiredConnection&&recoverable&&!deadmanToggle?.checked){
-      ST.textContent="Reconnecting";
+    const terminalMessage={
+      4000: "You are sending messages too fast. Please wait before starting a new room.",
+      4001: "Access is temporarily blocked. Please try again later.",
+      4002: "Too many connection attempts. Please wait a moment.",
+      4003: "This room connection isn't allowed. Start a new room or request a new invitation.",
+      4004: "The room connection wasn't authorized. Sign in again and retry.",
+      1009: "The connection closed because a message was too large."
+    }[ev.code];
+    if(terminalMessage){
+      wipeSession();
+      addMsg(terminalMessage,"error");
+    } else if(desiredConnection&&recoverable&&!deadmanToggle?.checked){
+      setRoomPresentation("reconnecting");
       scheduleReconnect(reconnectDelay);
       reconnectDelay=Math.min(reconnectDelay*2, RECONNECT_MAX_MS);
     } else {
@@ -874,5 +1037,7 @@ IN.addEventListener("focus", ()=>{
 
 chatModuleReady = true;
 window.NullTraceChatReady = true;
+setRoomPresentation("idle");
+setText(PARTICIPANT_COUNT, "0");
 updateLaunchButtons();
 window.dispatchEvent(new CustomEvent("nulltrace:chat-ready"));

@@ -42,9 +42,10 @@
             <img src="{{ url_for('static', path='logo.png') }}" class="access-logo" alt="NullTrace" decoding="async">
             <h1>NullTrace</h1>
           </div>
-          <p class="landing-lead">Encrypted rooms for free speech. No accounts, no usernames, no telemetry, no permanent chat history.</p>
+          <h2 class="landing-headline">A private space<br>to speak freely.</h2>
+          <p class="landing-lead">End-to-end encrypted rooms. Invite your people, choose who enters, and talk without a permanent chat archive.</p>
           <div class="access-actions">
-            <button id="payAccessBtn" class="btn primary" type="button">Pay for Access</button>
+            <button id="payAccessBtn" class="btn primary" type="button">Get access</button>
             <button id="showSigninBtn" class="btn" type="button">Sign In</button>
           </div>
           <p id="accessNotice" class="small muted" role="status"></p>
@@ -267,7 +268,8 @@
         <button class="btn ghost access-back" data-access-back="landing" type="button">Back</button>
         <h2>Sign In</h2>
       </div>
-      <label for="signinUserKey" class="visually-hidden">User key</label>
+      <p class="muted signin-intro">Your key is all you need. Paste it below to enter.</p>
+      <label for="signinUserKey" class="field-label">User key</label>
       <textarea id="signinUserKey" class="mono access-textarea" rows="3" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste nt_user_..."></textarea>
       <div id="restorePanel" class="restore-panel" hidden>
         <p class="muted small">This access is currently active somewhere else. Enter your restore key to move access here. The old session will be logged out.</p>
@@ -291,51 +293,43 @@
     </div>
   </section>
 
-  <main id="appShell" class="container" hidden>
+  <main id="appShell" class="container" data-room-state="idle" hidden>
 
     <header class="topbar" role="banner">
       <div class="brand">
         <img src="{{ url_for('static', path='logo.png') }}" class="logo" alt="NullTrace" decoding="async">
         <div class="brand-copy">
           <h1 class="app-title">NullTrace</h1>
-          <p class="app-sub">Quantum-ready · RAM-only · Zero telemetry</p>
+          <p class="app-sub">Private, by invitation.</p>
         </div>
       </div>
       <div class="status-badges" aria-label="Status">
-        <span class="badge">E2EE</span>
-        <span class="badge">PQ-Hybrid</span>
-        <span class="badge">No Logs</span>
-        <span id="status" class="badge badge-live" aria-live="polite"></span>
-        <button id="accessLogoutBtn" class="btn ghost top-logout" type="button">Logout</button>
+        <span id="status" class="room-status" role="status">Ready</span>
+        <button id="accessLogoutBtn" class="btn ghost top-logout" type="button">Sign out</button>
       </div>
     </header>
 
     <section class="hero" aria-labelledby="hero-title">
-      <div class="hero-card">
-        <h2 id="hero-title">Private rooms. Disposable identities.</h2>
-        <p class="muted">Start a secure channel, invite with a one-time capsule, let messages auto-burn.</p>
-
-        <div class="quick-actions">
-          <label for="room" class="visually-hidden">Secure Channel</label>
-          <input
-            id="room"
-            class="room-input"
-            inputmode="latin"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Secure Channel">
-          <div class="actions">
-            <button id="join" class="btn primary" type="button" disabled>Start</button>
-            <button id="capsuleBtn" class="btn" type="button" disabled>Join</button>
-            <button id="inviteBtn" class="btn ghost" type="button" disabled>Invite</button>
-          </div>
+      <div id="roomPanel" class="hero-card">
+        <div class="room-intro">
+          <p class="room-eyebrow">Your space, your invitation</p>
+          <h2 id="hero-title">A private room.<br>For your people.</h2>
+          <p id="roomHint" class="muted">Start a room and invite someone, or join with an invitation.</p>
         </div>
 
-        <ul class="hero-points" aria-label="Highlights">
-          <li>Hybrid setup &amp; ratcheted message keys</li>
-          <li>Random cover traffic &amp; padding</li>
-          <li>Burn timer · Deadman · One-tap wipe</li>
-        </ul>
+        <div class="quick-actions">
+          <div class="actions">
+            <button id="join" class="btn primary" type="button" disabled>Start a room</button>
+            <button id="capsuleBtn" class="btn" type="button" disabled>Join with invite</button>
+            <button id="inviteBtn" class="btn primary" type="button" disabled>Invite people</button>
+          </div>
+          <div id="roomDetails" class="room-details">
+            <label for="room" class="field-label">Room ID</label>
+            <input id="room" class="room-input" readonly tabindex="-1" autocomplete="off" spellcheck="false" aria-label="Current room ID">
+          </div>
+        </div>
+        <p id="roomNotice" class="room-notice" role="status"></p>
+        <p class="room-footnote">End-to-end encrypted. Entry by invitation.</p>
       </div>
     </section>
 
@@ -346,13 +340,15 @@
 
     <section class="grid" aria-label="Chat area">
       <div class="chat-shell">
+        <div class="chat-heading"><h3>Conversation</h3><span class="small muted">Messages disappear automatically</span></div>
+        <div class="chat-empty" aria-hidden="true"><span class="empty-mark"></span><p>A little space to talk.</p><span>Messages will appear here.</span></div>
         <ul id="messages" class="chat" aria-live="polite" aria-relevant="additions"></ul>
       </div>
 
       <aside class="roster" aria-labelledby="roster-title">
         <div class="roster-head">
-          <h3 id="roster-title">Participants</h3>
-          <p class="muted small">Approve newcomers · verify fingerprints</p>
+          <h3 id="roster-title">In this room <span id="participantCount">0</span></h3>
+          <p class="muted small">Compare fingerprints with your guests.</p>
         </div>
         <div id="userList" class="user-list" role="list"></div>
       </aside>
@@ -364,14 +360,14 @@
         <input
           id="input"
           class="compose-input"
-          placeholder="Type your secure message…"
+          placeholder="Write a message…"
           disabled
           autocomplete="off"
           spellcheck="false">
         <button id="send" class="btn primary" type="button" disabled>Send</button>
       </div>
       <div class="controls">
-        <button id="disconnectBtn" class="btn danger" type="button" disabled title="Wipe session">Wipe</button>
+        <button id="disconnectBtn" class="btn danger" type="button" disabled title="Leave the room and wipe this session">Leave &amp; wipe</button>
         <label class="deadman-label" for="deadmanToggle" title="Hide tab &gt; 2 s to wipe">
           <input type="checkbox" id="deadmanToggle">
           Deadman
@@ -379,8 +375,8 @@
       </div>
     </section>
 
-    <section class="features" aria-labelledby="engine-title">
-      <h2 id="engine-title">Security Engine</h2>
+    <details class="features" aria-labelledby="engine-title">
+      <summary id="engine-title">Security, in detail</summary>
 
       <div class="feature-grid">
         <div class="feature">
@@ -428,10 +424,10 @@
           <p>Approvals, SAS verify, burn timer, deadman switch, one-tap wipe.</p>
         </div>
       </div>
-    </section>
+    </details>
 
-    <section class="features" aria-labelledby="how-title">
-      <h2 id="how-title">How it works</h2>
+    <details class="features" aria-labelledby="how-title">
+      <summary id="how-title">How your room works</summary>
 
       <ol class="how-list">
         <li><strong>Host starts a room.</strong> Fresh keys; disposable room ID.</li>
@@ -444,50 +440,59 @@
         <li><strong>Traffic shaping.</strong> Frames receive random padding; random cover frames carry no message keys.</li>
         <li><strong>Clean exit.</strong> Burn timers remove visible messages; leaving wipes in-memory session keys.</li>
       </ol>
-    </section>
+    </details>
 
   </main>
 
-  <dialog id="inviteDlg" class="dlg" aria-labelledby="invite-title">
-    <h3 id="invite-title">Share capsule</h3>
-    <p class="muted small">Expires in <span id="inviteTimer">02:00</span></p>
+  <dialog id="inviteDlg" class="dlg" aria-labelledby="invite-title" aria-describedby="invite-description">
+    <p class="dialog-eyebrow">Invite someone</p>
+    <h3 id="invite-title">Make room for them.</h3>
+    <p id="invite-description" class="dialog-description">Send this invitation privately. You approve each guest before they enter.</p>
+    <div class="field-heading"><label for="inviteTxt" class="field-label">Your invitation</label><p class="invite-expiry"><span class="expiry-label">Expires in </span><span id="inviteTimer">02:00</span></p></div>
     <textarea
       id="inviteTxt"
       readonly
       class="mono"
-      rows="5"
+      rows="4"
       autocomplete="off"
       autocorrect="off"
       autocapitalize="off"
       spellcheck="false"
       tabindex="-1"
       inputmode="none"></textarea>
+    <p id="inviteFeedback" class="dialog-feedback" role="status" aria-live="polite"></p>
     <div class="dlg-buttons">
-      <button id="inviteCopyBtn" class="btn primary" type="button">Copy</button>
-      <button id="inviteCloseBtn" class="btn" type="button">Close</button>
+      <button id="inviteCloseBtn" class="btn ghost" type="button">Done</button>
+      <button id="inviteCopyBtn" class="btn primary" type="button">Copy invitation</button>
     </div>
   </dialog>
 
-<dialog id="pasteDlg" class="dlg" aria-labelledby="paste-title">
-  <h3 id="paste-title">Paste capsule</h3>
-  <textarea id="pasteTxt" class="mono" rows="5" placeholder="Paste NT-C3 capsule here…"></textarea>
+<dialog id="pasteDlg" class="dlg" aria-labelledby="paste-title" aria-describedby="paste-description">
+  <p class="dialog-eyebrow">You’re invited</p>
+  <h3 id="paste-title">Join their room.</h3>
+  <p id="paste-description" class="dialog-description">Paste the invitation your host shared with you.</p>
+  <label for="pasteTxt" class="field-label">Invitation</label>
+  <textarea id="pasteTxt" class="mono" rows="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-describedby="pasteStatus" placeholder="Paste your invitation here…"></textarea>
+  <p id="pasteStatus" class="dialog-feedback" role="status" aria-live="polite"></p>
   <div class="dlg-buttons">
-    <button id="pasteOk" class="btn primary" type="button">OK</button>
-    <button id="pasteCancelBtn" class="btn" type="button">Cancel</button>
+    <button id="pasteCancelBtn" class="btn ghost" type="button">Cancel</button>
+    <button id="pasteOk" class="btn primary" type="button">Review invitation</button>
   </div>
 </dialog>
 
 
-  <dialog id="confirmDlg" class="dlg" aria-labelledby="confirm-title">
-    <h3 id="confirm-title">Confirm Join</h3>
+  <dialog id="confirmDlg" class="dlg" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+    <p class="dialog-eyebrow">One last check</p>
+    <h3 id="confirm-title">The right room?</h3>
+    <p id="confirm-description" class="dialog-description">Compare the host fingerprint through a trusted channel, then request entry.</p>
     <div class="confirm-grid" role="group" aria-label="Confirmation">
-      <p>Room: <strong><span id="confirmRoom"></span></strong></p>
-      <p>Host ID: <code id="confirmHostFP"></code></p>
-      <p>Your ID: <code id="confirmGuestFP"></code></p>
+      <p class="confirm-room"><span class="field-label">Room</span><strong id="confirmRoom"></strong></p>
+      <p><span class="field-label">Host fingerprint</span><code id="confirmHostFP"></code></p>
+      <p><span class="field-label">Your fingerprint</span><code id="confirmGuestFP"></code></p>
     </div>
     <div class="dlg-buttons">
-      <button id="confirmJoinBtn" class="btn primary" type="button">Join</button>
-      <button id="confirmCancelBtn" class="btn" type="button">Cancel</button>
+      <button id="confirmCancelBtn" class="btn ghost" type="button">Cancel</button>
+      <button id="confirmJoinBtn" class="btn primary" type="button">Request to join</button>
     </div>
   </dialog>
 

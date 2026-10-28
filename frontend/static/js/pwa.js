@@ -10,7 +10,6 @@
   const root = document.documentElement;
   const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
   const ios = /iphone|ipad|ipod/i.test(window.navigator.userAgent);
-  let appHeight = Math.round(window.innerHeight || 0);
 
   root.classList.toggle("is-standalone", standalone);
   root.classList.toggle("is-ios", ios);
@@ -23,9 +22,14 @@
     const viewport = window.visualViewport;
     const visibleHeight = viewport ? viewport.height : window.innerHeight;
     const offsetTop = viewport ? viewport.offsetTop : 0;
-    appHeight = Math.max(appHeight, Math.round(window.innerHeight || visibleHeight));
+    // Follow the current layout viewport. A historical maximum leaves the
+    // composer below the screen after rotating or resizing to a shorter view.
+    // Overlay keyboards shrink only visualViewport; resizes-content keyboards
+    // also shrink innerHeight and must not receive a second bottom offset.
+    const appHeight = Math.round(window.innerHeight || visibleHeight);
     const keyboardHeight = Math.max(0, appHeight - Math.round(visibleHeight + offsetTop));
     root.style.setProperty("--app-height", `${appHeight}px`);
+    root.style.setProperty("--visible-height", `${Math.round(visibleHeight)}px`);
     root.style.setProperty("--keyboard-height", `${keyboardHeight}px`);
     root.style.setProperty("--viewport-offset-top", `${Math.round(offsetTop)}px`);
   }

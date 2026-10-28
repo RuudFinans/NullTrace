@@ -34,6 +34,15 @@ try {
     await page.waitForFunction(()=>document.body.classList.contains("access-unlocked"));
   }
   const [host,guest,third]=pages;
+  // A failed start must return to a usable launch screen with a visible error.
+  await host.route("**/api/room-token", route=>route.fulfill({
+    status:503,contentType:"application/json",body:"{}"
+  }));
+  await host.locator("#join").click();
+  await host.locator("#roomNotice").filter({hasText:"Couldn't open this room"}).waitFor();
+  assert.equal(await host.locator("#join").isVisible(),true);
+  assert.equal(await host.locator("#join").isEnabled(),true);
+  await host.unroute("**/api/room-token");
   await host.locator("#join").click();
   await host.waitForFunction(()=>!document.getElementById("inviteBtn").disabled);
   async function invite(page) {
@@ -43,6 +52,18 @@ try {
     await page.locator("#capsuleBtn").click();
     await page.locator("#pasteTxt").fill(capsule);
     await page.locator("#pasteOk").click();
+    if(page===guest){
+      await page.locator("#confirmJoinBtn").waitFor();
+      const cancelledFingerprint=await page.locator("#confirmGuestFP").textContent();
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(()=>!document.getElementById("confirmDlg").open);
+      assert.equal(await page.evaluate(()=>document.activeElement.id),"capsuleBtn");
+      await page.locator("#capsuleBtn").click();
+      await page.locator("#pasteTxt").fill(capsule);
+      await page.locator("#pasteOk").click();
+      await page.locator("#confirmJoinBtn").waitFor();
+      assert.notEqual(await page.locator("#confirmGuestFP").textContent(),cancelledFingerprint);
+    }
     await page.locator("#confirmJoinBtn").click();
     await host.locator("#pendingList button").last().click();
     await page.waitForFunction(()=>!document.getElementById("send").disabled);
@@ -92,5 +113,12 @@ try {
   assert.equal(await third.locator("#messages li").count(),0);
   assert.deepEqual(errors,[]);
   assert.deepEqual(cspErrors,[]);
-  console.log("PASS: 3 independent browser sessions, login, v3 invites, approval, signed group chat, scheduled ratchet refresh, reconnect/reapproval, membership removal, host departure, logout cleanup, reload, CSP and cache policy.");
-} finally { await browser.close(); }
+  console.log("PASS: 3 independent browser sessions, login, failed-start retry, cancelled invitation/focus recovery, v3 invites, approval, signed group chat, scheduled ratchet refresh, reconnect/reapproval, membership removal, host departure, logout cleanup, reload, CSP and cache policy.");
+} finally {
+  for(const context of browser.contexts()) for(const page of context.pages()){
+    if(await page.locator("#accessLogoutBtn").isVisible().catch(()=>false)) {
+      await page.locator("#accessLogoutBtn").click().catch(()=>{});
+    }
+  }
+  await browser.close();
+}
